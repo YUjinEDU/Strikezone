@@ -1,0 +1,13 @@
+    체스보드 경로
+    'OpenCV_Python_2ndEdition_Examples/data/photo_(1).jpg',
+    'OpenCV_Python_2ndEdition_Examples/data/photo_(2).jpg',
+    'OpenCV_Python_2ndEdition_Examples/data/photo_(3).jpg',
+    'OpenCV_Python_2ndEdition_Examples/data/photo_(4).jpg',
+    'OpenCV_Python_2ndEdition_Examples/data/photo_(5).jpg'
+	
+
+	캘리브레이션 파일 경로
+    'OpenCV_Python_2ndEdition_Examples/data/calib_project.npz'
+
+
+    
