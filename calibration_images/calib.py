@@ -3,10 +3,10 @@ import numpy as np
 import glob
 import time
 import random
+import os
 
 # 체스보드 크기 설정 (내부 코너 수)
 chessboard_size = (11, 8)
-frame_size = (640, 480)  # 리사이징 후의 해상도
 
 # 체스보드 3D 포인트 준비
 objp = np.zeros((chessboard_size[0] * chessboard_size[1], 3), np.float32)
@@ -16,8 +16,12 @@ objp[:, :2] = np.mgrid[0:chessboard_size[0], 0:chessboard_size[1]].T.reshape(-1,
 objpoints = [] # 3D 포인트
 imgpoints = [] # 2D 포인트
 
+# 현재 디렉토리 출력 (디버깅용)
+print(f"현재 디렉토리: {os.getcwd()}")
+
 # 캘리브레이션 이미지 로드
-images = glob.glob("./calibration_images/*.jpg")
+images = glob.glob("calibration_images\*.jpg")
+print(f"로드된 이미지 수: {len(images)}")
 
 # 이미지 샘플링
 num_samples = 30  # 사용할 샘플 수
@@ -30,7 +34,6 @@ else:
     start_time = time.time()
     for image_file in images:
         img = cv2.imread(image_file)
-        img = cv2.resize(img, frame_size)  # 이미지 리사이징
         gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
 
         # 체스보드 코너 찾기
@@ -45,11 +48,11 @@ else:
             cv2.imshow('Chessboard', img)
             cv2.waitKey(100)
 
-    cv2.destroyAllWindows()
+    
 
     if len(objpoints) > 0 and len(imgpoints) > 0:
         # 카메라 캘리브레이션
-        ret, camera_matrix, dist_coeffs, rvecs, tvecs = cv2.calibrateCamera(objpoints, imgpoints, frame_size, None, None)
+        ret, camera_matrix, dist_coeffs, rvecs, tvecs = cv2.calibrateCamera(objpoints, imgpoints, gray.shape[::-1], None, None)
         np.savez("camera_calib_SPC.npz", camera_matrix=camera_matrix, dist_coeffs=dist_coeffs)
         print("카메라 캘리브레이션 완료. 결과가 저장되었습니다.")
     else:
