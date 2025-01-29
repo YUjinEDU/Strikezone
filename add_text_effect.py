@@ -10,8 +10,8 @@ from tkinter import ttk
 from tkinter import PhotoImage
 import threading
 
+global frame_count
 last_strike_time = 0.0
-last_draw_time = 0.0
 selected_camera_index = None  # 선택된 카메라 인덱스를 저장하는 변수
 preview_stop_event = threading.Event() # 미리보기 중지 이벤트
 
@@ -30,24 +30,15 @@ dist_coeffs = calib_data["dist_coeffs"]
 # 공의 실제 반지름 (미터 단위)
 ball_radius_real = 0.036
 
-# 공중에 띄울 스트라이크 존의 3D 좌표 (마커 기준으로 상대적인 위치)
-# strike_zone_corners = np.array([
-#     [-0.215, 0.2837, 0],  # Bottom-left
-#     [ 0.215, 0.2837, 0],  # Bottom-right
-#     [ 0.215, 0.7851, 0],  # Top-right
-#     [-0.215, 0.7851, 0]   # Top-left
-# ], dtype=np.float32)
-
+# 공중에 띄울 스트라이크 존의 3D 좌표 (마커 기준)
 strike_zone_corners = np.array([
-    [-0.08, 0.1, 0],  # Bottom-left
-    [ 0.08, 0.1, 0],  # Bottom-right
-    [ 0.08, 0.3, 0],  # Top-right
-    [-0.08, 0.3, 0],  # Top-left
-
+    [-0.08, 0.1, 0],
+    [ 0.08, 0.1, 0],
+    [ 0.08, 0.3, 0],
+    [-0.08, 0.3, 0]
 ], dtype=np.float32)
 
-
-# 회전 행렬 (예: 스트라이크 존을 90도 회전시키는 용도)
+# 회전 행렬 (예: 스트라이크 존을 90도 회전)
 rotation_matrix = np.array([
     [1, 0, 0],
     [0, 0, -1],
@@ -55,7 +46,7 @@ rotation_matrix = np.array([
 ], dtype=np.float32)
 strike_zone_corners = np.dot(strike_zone_corners, rotation_matrix.T)
 
-# ARUCO 사전 및 파라미터 설정
+# ARUCO 설정
 aruco_dict = aruco.getPredefinedDictionary(aruco.DICT_6X6_250)
 parameters = aruco.DetectorParameters()
 
@@ -65,9 +56,9 @@ skip_frames = 1  # 매 프레임마다 처리
 out_count = 0
 strike_count = 0
 
-# 감지된 점들의 리스트 (마커 좌표계 3D 좌표 기록)
+# 감지된 점들의 리스트 (마커 좌표계 3D 좌표)
 detected_points = []
-ar_started = False  # AR 시작 여부
+ar_started = False
 
 # 색상 기반 객체 추적 (공) 범위
 greenLower = (29, 86, 6)
@@ -78,17 +69,63 @@ redLower2 = (170, 70, 50)
 redUpper2 = (180, 255, 255)
 pts = deque(maxlen=64)
 
+# 'STRIKE!' 효과 표시용
+strike_effect_end_time = 0.0
 
 ###########################################################
-# 텍스트 이펙트: STRIKE!
+# (A) 텍스트 이펙트: STRIKE!
 ###########################################################
 # 이펙트 정보: {'start_time': float, 'duration': float, 'text': str}
-
-# 'STRIKE!' 효과 표시용
-effect_end_time = 0.0
 effects = []
-result = ""
 
+def draw_grid(frame, points, num_divisions):
+    for i in range(1, num_divisions):
+        pt1 = tuple((points[0] + (points[3] - points[0]) * i / num_divisions).astype(int))
+        pt2 = tuple((points[1] + (points[2] - points[1]) * i / num_divisions).astype(int))
+        cv2.line(frame, pt1, pt2, (0, 0, 0), 1)
+
+        pt1 = tuple((points[0] + (points[1] - points[0]) * i / num_divisions).astype(int))
+        pt2 = tuple((points[3] + (points[2] - points[3]) * i / num_divisions).astype(int))
+        cv2.line(frame, pt1, pt2, (0, 0, 0), 1)
+
+def is_point_in_polygon(point, polygon):
+    return cv2.pointPolygonTest(np.array(polygon, dtype=np.int32), point, False) >= 0
+
+def reset():
+    global detected_points, ar_started, strike_count, out_count, effects
+    detected_points = []
+    ar_started = False
+    strike_count = 0
+    out_count = 0
+    effects.clear()
+
+def detect_hand_open(results):
+    if results.multi_hand_landmarks:
+        for hand_landmarks in results.multi_hand_landmarks:
+            tips = [hand_landmarks.landmark[i] for i in [8, 12, 16, 20]]
+            if all(tip.y < hand_landmarks.landmark[i - 2].y for tip, i in zip(tips, [8, 12, 16, 20])):
+                return True
+    return False
+
+def estimate_ball_depth(radius, known_radius=0.036):
+    f_x = camera_matrix[0, 0]
+    f_y = camera_matrix[1, 1]
+    f = (f_x + f_y) / 2
+    Z = (f * known_radius) / radius
+    return Z
+
+def get_camera_list():
+    camera_list = []
+    for index in range(10):
+        cap = cv2.VideoCapture(index, cv2.CAP_MSMF)
+        if cap.isOpened():
+            camera_list.append(f"Camera {index}")
+            cap.release()
+    return camera_list
+
+###########################################################
+# (B) STRIKE! 텍스트 이펙트
+###########################################################
 def add_strike_text_effect():
     # 1초 동안 STRIKE! 텍스트 표시
     effects.append({
@@ -102,10 +139,10 @@ def add_ball_text_effect():
     effects.append({
         'start_time': time.time(),
         'duration': 1.0,
-        'text': "BALL!"
+        'text': "ball!"
     })
 
-def draw_effects(frame, result):
+def draw_effects(frame):
     now = time.time()
     alive = []
     for eff in effects:
@@ -117,74 +154,35 @@ def draw_effects(frame, result):
             cx = w // 2
             cy = h // 2
             # 예: scale=3.0, 빨간색
-
-            if result == "strike":
-                cv2.putText(frame, eff['text'], (cx-100, cy),
+            cv2.putText(frame, eff['text'], (cx-100, cy),
                         cv2.FONT_HERSHEY_SIMPLEX, 3, (0, 0, 255), 5, cv2.LINE_AA)
-                alive.append(eff)
-            
-            else:
-                cv2.putText(frame, eff['text'], (cx-100, cy),
-                            cv2.FONT_HERSHEY_SIMPLEX, 3, (0, 255, 0), 5, cv2.LINE_AA)
-                alive.append(eff)
-            
+            alive.append(eff)
     effects[:] = alive
 
+########################################
+# project_point_to_3dzone() & project_3d_point()
+########################################
+def project_point_to_3dzone(point_3d, rvec, tvec, camera_matrix, dist_coeffs):
+    # Z=0 평면 강제
+    projected_3d = np.array([point_3d[0], point_3d[1], 0], dtype=np.float32)
+    projected_2d, _ = cv2.projectPoints(
+        np.array([projected_3d]), rvec, tvec, camera_matrix, dist_coeffs
+    )
+    return projected_2d[0][0], projected_3d
 
+def project_3d_point(point_3d, rvec, tvec, camera_matrix, dist_coeffs):
+    """ 실제 (x,y,z) 그대로 2D로 투영 """
+    object_points = np.array([point_3d], dtype=np.float32).reshape(-1,1,3)
+    projected_2d, _ = cv2.projectPoints(
+        object_points,
+        rvec, tvec,
+        camera_matrix, dist_coeffs
+    )
+    return projected_2d[0][0]
 
-def draw_grid(frame, points, num_divisions):
-    """ 사각형 내부에 격자를 그리는 함수 """
-    for i in range(1, num_divisions):
-        # 수평선
-        pt1 = tuple((points[0] + (points[3] - points[0]) * i / num_divisions).astype(int))
-        pt2 = tuple((points[1] + (points[2] - points[1]) * i / num_divisions).astype(int))
-        cv2.line(frame, pt1, pt2, (0, 0, 0), 1)
-        #print("pt1, pt2", pt1, pt2)
-        # 수직선
-        pt1 = tuple((points[0] + (points[1] - points[0]) * i / num_divisions).astype(int))
-        pt2 = tuple((points[3] + (points[2] - points[3]) * i / num_divisions).astype(int))
-        cv2.line(frame, pt1, pt2, (0, 0, 0), 1)
-
-def is_point_in_polygon(point, polygon):
-    """ 점(2D)이 polygon 내부에 있는지 확인 """
-    return cv2.pointPolygonTest(np.array(polygon, dtype=np.int32), point, False) >= 0
-
-def reset():
-    global detected_points, ar_started, strike_count, out_count
-    detected_points = []
-    ar_started = False
-    strike_count = 0
-    out_count = 0
-
-def detect_hand_open(results):
-    """ 손바닥이 펴진 상태인지 확인 """
-    if results.multi_hand_landmarks:
-        for hand_landmarks in results.multi_hand_landmarks:
-            # 손가락 끝 위치
-            tips = [hand_landmarks.landmark[i] for i in [8, 12, 16, 20]]
-            # 손가락이 펴졌는지(손가락 끝 y가 관절 y보다 위인지) 간단 체크
-            if all(tip.y < hand_landmarks.landmark[i - 2].y for tip, i in zip(tips, [8, 12, 16, 20])):
-                return True
-    return False
-
-def estimate_ball_depth(radius, known_radius=0.036):
-    """ 공의 깊이(Z)를 추정하는 함수 """
-    f_x = camera_matrix[0, 0]
-    f_y = camera_matrix[1, 1]
-    f = (f_x + f_y) / 2
-    Z = (f * known_radius) / radius
-    return Z
-
-def get_camera_list():
-    """ 사용 가능한 카메라 목록 검색 """
-    camera_list = []
-    for index in range(10):
-        cap = cv2.VideoCapture(index, cv2.CAP_MSMF)
-        if cap.isOpened():
-            camera_list.append(f"Camera {index}")
-            cap.release()
-    return camera_list
-
+########################################
+# 카메라 선택 GUI (생략 가능)
+########################################
 class CameraPreview:
     def __init__(self, parent, camera_index):
         self.frame = ttk.Frame(parent)
@@ -199,17 +197,16 @@ class CameraPreview:
         self.label.pack(pady=5)
         self.preview.pack(pady=5)
         self.select_button.pack(pady=5)
-
         self.stop_event = threading.Event()
         self.start_preview()
-    
+
     def start_preview(self):
         def preview_thread():
             cap = cv2.VideoCapture(self.camera_index, cv2.CAP_MSMF)
             if not cap.isOpened():
                 self.show_error()
                 return
-            
+
             while not self.stop_event.is_set():
                 ret, frame = cap.read()
                 if not ret:
@@ -222,24 +219,23 @@ class CameraPreview:
                 self.preview.image = image
             cap.release()
         threading.Thread(target=preview_thread, daemon=True).start()
-    
+
     def show_error(self):
         black_frame = np.zeros((240, 320, 3), dtype=np.uint8)
         black_frame_rgb = cv2.cvtColor(black_frame, cv2.COLOR_BGR2RGB)
         image = PhotoImage(data=cv2.imencode('.png', black_frame_rgb)[1].tobytes())
         self.preview.configure(image=image, text="연결 안됨", foreground="red")
         self.preview.image = image
-    
+
     def stop(self):
         self.stop_event.set()
-    
+
     def on_select(self):
         global selected_camera_index
         selected_camera_index = self.camera_index
         window.quit()
 
 def create_camera_selection_gui():
-    """ 카메라 선택 GUI 생성 """
     global window
     window = tk.Tk()
     window.title("Select Camera")
@@ -272,31 +268,9 @@ def create_camera_selection_gui():
     for preview in previews:
         preview.stop()
 
-def project_point_to_3dzone(point_3d, rvec, tvec, camera_matrix, dist_coeffs):
-    """
-    마커 좌표계의 point_3d를
-    Z=0 평면에 강제 투영(스트존 판정용) → 2D 좌표 반환
-    """
-    projected_3d = np.array([point_3d[0], point_3d[1], 0], dtype=np.float32)
-    projected_2d, _ = cv2.projectPoints(
-        np.array([projected_3d]), rvec, tvec, camera_matrix, dist_coeffs
-    )
-    return projected_2d[0][0], projected_3d
-
-def project_real_3d(point_3d, rvec, tvec, camera_matrix, dist_coeffs):
-    """
-    마커 좌표계의 point_3d(x, y, z)를
-    그대로 영상에 투영(실제 높이 반영) → 2D 좌표 반환
-    """
-    object_points = np.array([point_3d], dtype=np.float32).reshape(-1,1,3)
-    projected_2d, _ = cv2.projectPoints(
-        object_points,
-        rvec, tvec,
-        camera_matrix, dist_coeffs
-    )
-    return projected_2d[0][0]  # (x, y)
-
-
+##############################
+# 메인 실행부
+##############################
 if __name__ == "__main__":
     create_camera_selection_gui()
     if selected_camera_index is None:
@@ -318,7 +292,7 @@ if __name__ == "__main__":
             print("프레임을 읽을 수 없습니다.")
             break
 
-        # Mediapipe 손 감지
+        # Mediapipe로 손 감지
         rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
         results = hands.process(rgb_frame)
 
@@ -330,10 +304,13 @@ if __name__ == "__main__":
             else:
                 cv2.putText(frame, "Show your hand!", (10, 100),
                             cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 255), 2)
-        
+
         if ar_started:
+            
             frame_count += 1
             if frame_count % skip_frames != 0:
+                # 이펙트 그리기
+                draw_effects(frame)
                 cv2.imshow('ARUCO Tracker with Strike Zone', frame)
                 key = cv2.waitKey(1)
                 if key & 0xFF == ord('q'):
@@ -347,24 +324,21 @@ if __name__ == "__main__":
             corners, ids, rejected = detector.detectMarkers(gray)
 
             if ids is not None:
-                # 마커 포즈 추정
                 rvecs, tvecs, _ = aruco.estimatePoseSingleMarkers(
-                    corners, 0.16, camera_matrix, dist_coeffs
+                    corners, 0.15, camera_matrix, dist_coeffs
                 )
 
                 for rvec, tvec in zip(rvecs, tvecs):
-                    # 스트라이크 존 투영
+                    # 스트라이크 존
                     projected_points, _ = cv2.projectPoints(
                         strike_zone_corners, rvec, tvec, camera_matrix, dist_coeffs
                     )
                     projected_points = projected_points.reshape(-1, 2).astype(int)
 
-                    # 스트라이크 존 사각형 & 격자
                     cv2.polylines(frame, [projected_points], True, (0, 0, 0), 4)
-                    
                     draw_grid(frame, projected_points, 3)
 
-                    # 공(녹/빨) 검출
+                    # 공(녹/빨) 찾기
                     blurred = cv2.GaussianBlur(frame, (11, 11), 0)
                     hsv = cv2.cvtColor(blurred, cv2.COLOR_BGR2HSV)
                     mask_green = cv2.inRange(hsv, greenLower, greenUpper)
@@ -389,11 +363,10 @@ if __name__ == "__main__":
                             center = (int(x), int(y))
 
                         if radius > 1:
-                            # 공 화면 표시 (노란 원 + 빨간 점)
                             cv2.circle(frame, (int(x), int(y)), int(radius), (0, 255, 255), 2)
                             cv2.circle(frame, center, 5, (0, 0, 255), -1)
-                            
-                            # 공 깊이 추정, 카메라 좌표계
+
+                            # 깊이
                             estimated_Z = estimate_ball_depth(radius)
                             ball_3d_cam = np.array([[
                                 (center[0] - camera_matrix[0,2]) * estimated_Z / camera_matrix[0,0],
@@ -401,80 +374,43 @@ if __name__ == "__main__":
                                 estimated_Z
                             ]])
 
-                            # 마커와 공 깊이 비교
                             marker_z = tvec[0][2]
                             depth_threshold = 0.05
 
-                            # 스트존 통과 판단
+                            # 스트라이크 판정
                             if (abs(estimated_Z - marker_z) < depth_threshold and
                                 is_point_in_polygon(center, projected_points)):
 
-                                # 카메라 → 마커 좌표계
                                 R_marker, _ = cv2.Rodrigues(rvec)
                                 point_in_marker_coord = np.dot(
                                     R_marker.T,
                                     (ball_3d_cam.reshape(3,1) - tvec.reshape(3,1))
-                                ).T[0]  # (x,y,z)
+                                ).T[0]
 
-                                # 스트존 평면(Z=0) 좌표(판정용)
-                                pt_2d_zone, _ = project_point_to_3dzone(
-                                    point_in_marker_coord,
-                                    rvec, tvec,
-                                    camera_matrix, dist_coeffs
-                                )
-
-                                # 실제 3D 높이를 이용해 검정 점 찍기
-                                # (직접 그릴 때)
-                                pt_2d_real = project_real_3d(
-                                    point_in_marker_coord,
-                                    rvec, tvec,
-                                    camera_matrix, dist_coeffs
-                                )
-                                
-                                #cv2.circle(frame, (int(pt_2d_real[0]), int(pt_2d_real[1])), 8, (0,0,0), -1)
-
-                                # (추가) 기록 후 매 프레임 다시 재투영
+                                # 스트라이크!
                                 current_time = time.time()
                                 if current_time - last_strike_time > 1.0:
                                     strike_count += 1
                                     last_strike_time = current_time
-                                    print(f"Strike Count Increased: {strike_count}")
+                                    print(f"Strike Count: {strike_count}")
 
-                                    detected_points.append({
-                                        '3d_coord': point_in_marker_coord,
-                                        'rvec': rvec.copy(),
-                                        'tvec': tvec.copy()
-                                    })
+                                    # (C) STRIKE! 텍스트 이펙트
                                     add_strike_text_effect()
-                                    result = "strike"
-                            
-                            # (선택) 마커/공 깊이 텍스트 표시
-                            marker_depth_text = f"Marker Z: {marker_z:.2f} m"
-                            ball_depth_text = f"Ball Z: {estimated_Z:.2f} m"
-                            marker_position = tuple(projected_points[0])  # 첫 번째 코너
-                            cv2.putText(frame, marker_depth_text,
-                                        (marker_position[0], marker_position[1] - 10),
-                                        cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 0, 0), 2)
-                            cv2.putText(frame, ball_depth_text,
-                                        (center[0]+20, center[1]+30),
-                                        cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 2)
+                                
+                                 # (선택) 마커/공 깊이 텍스트 표시
+                                marker_depth_text = f"Marker Z: {marker_z:.2f} m"
+                                ball_depth_text = f"Ball Z: {estimated_Z:.2f} m"
+                                marker_position = tuple(projected_points[0])  # 첫 번째 코너
+                                cv2.putText(frame, marker_depth_text,
+                                            (marker_position[0], marker_position[1] - 10),
+                                            cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 0, 0), 2)
+                                cv2.putText(frame, ball_depth_text,
+                                            (center[0]+20, center[1]+30),
+                                            cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 2)
 
-            draw_effects(frame, result)
-            # 이전에 저장된 점들도 다시 재투영 → 계속 화면에 표시
-            for point_data in detected_points:
-                # point_data['3d_coord'] = (x,y,z)
-                # 과거 rvec,tvec를 쓸 수도 있지만,
-                # 여기서는 '현재' rvec,tvec가 있다고 가정(여러 마커 처리 시 조정 필요)
-                if ids is not None:
-                    # 마커가 인식되었다면
-                    pt_2d_real = project_real_3d(
-                        point_data['3d_coord'],
-                        rvec, tvec,
-                        camera_matrix, dist_coeffs
-                    )
-                    cv2.circle(frame, (int(pt_2d_real[0]), int(pt_2d_real[1])), 8, (0, 200, 200), 2)
+            # 이펙트 그리기
+            draw_effects(frame)
 
-            # 스트라이크/아웃 표시
             if strike_count >= 3:
                 out_count += 1
                 strike_count = 0
@@ -484,7 +420,7 @@ if __name__ == "__main__":
             cv2.putText(frame, f"O {out_count}", (10, 100),
                         cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 255), 2)
 
-        # FPS 계산
+        # FPS
         end_time = time.time()
         fps = 1.0 / (end_time - start_time + 1e-8)
         cv2.putText(frame, f"FPS: {int(fps)}", (10, 30),
