@@ -33,6 +33,61 @@ print("Keys in the calibration file:", calib_data.files)
 
 
 
+def init_kalman_3d():
+    """
+    상태: (x, y, z, vx, vy, vz) -> 6차원
+    측정: (x, y, z) -> 3차원
+    """
+    kf = cv2.KalmanFilter(6, 3)  # stateDim=6, measDim=3
+
+    # Transition matrix (A)
+    # 예: 등속도 모델
+    # x' = x + vx
+    # y' = y + vy
+    # z' = z + vz
+    # vx' = vx
+    # vy' = vy
+    # vz' = vz
+    kf.transitionMatrix = np.array([
+        [1,0,0,1,0,0],
+        [0,1,0,0,1,0],
+        [0,0,1,0,0,1],
+        [0,0,0,1,0,0],
+        [0,0,0,0,1,0],
+        [0,0,0,0,0,1],
+    ], dtype=np.float32)
+
+    # 측정행렬 (H)
+    # 관측: x, y, z만 측정
+    # H = [1 0 0 0 0 0
+    #      0 1 0 0 0 0
+    #      0 0 1 0 0 0]
+    kf.measurementMatrix = np.array([
+        [1,0,0,0,0,0],
+        [0,1,0,0,0,0],
+        [0,0,1,0,0,0]
+    ], dtype=np.float32)
+
+    # 공정 잡음, 측정 잡음 (예시값)
+    kf.processNoiseCov = np.eye(6, dtype=np.float32) * 0.01
+    kf.measurementNoiseCov = np.eye(3, dtype=np.float32) * 0.1
+    # 초기 오차 공분산
+    kf.errorCovPost = np.eye(6, dtype=np.float32)
+
+    # 초기 상태 추정치 (x,y,z,vx,vy,vz)
+    kf.statePost = np.zeros((6,1), dtype=np.float32)
+
+    return kf
+
+# 전역 칼만 필터
+kalman_3d = init_kalman_3d()
+
+# 공 3D 궤적 저장 (보정 후 좌표)
+kalman_trajectory_strike = []
+kalman_trajectory_ball   = []
+
+
+
 #asdasd
 camera_matrix = calib_data["camera_matrix"]
 dist_coeffs = calib_data["dist_coeffs"]
@@ -535,31 +590,29 @@ if __name__ == "__main__":
                     corners, 0.16, camera_matrix, dist_coeffs
                 )
 
+                
                 for rvec, tvec in zip(rvecs, tvecs):
-                    #볼 영역 투영
+                    overlay = frame.copy()
+
+                    # 1) 첫 번째 영역
                     projected_points, _ = cv2.projectPoints(
                         ball_zone_corners, rvec, tvec, camera_matrix, dist_coeffs
                     )
                     projected_points = projected_points.reshape(-1, 2).astype(int)
-                    # 연한 빨강색으로 채우기 (반투명)
-                    cv2.polylines(frame, [projected_points], True, (200, 200, 0), 4)
-                    cv2.fillPoly(frame, [projected_points], (200, 200, 0))
-                    (0, 100, 255)
-                    # 3) 반투명 합성
-                    alpha = 0.3  # 투명도 (0=완전투명, 1=불투명)
-                    cv2.addWeighted(frame, alpha, frame, 1 - alpha, 0, frame)
+                    cv2.polylines(overlay, [projected_points], True, (200, 200, 0), 4)
+                    cv2.fillPoly(overlay, [projected_points], (200, 200, 0))
 
-                    
+                    # 2) 두 번째 영역
                     projected_points2, _ = cv2.projectPoints(
                         ball_zone_corners2, rvec, tvec, camera_matrix, dist_coeffs
                     )
                     projected_points2 = projected_points2.reshape(-1, 2).astype(int)
-                    cv2.polylines(frame, [projected_points2], True, (0, 100, 255), 4)
-                    cv2.fillPoly(frame, [projected_points2], (0, 100, 255))
-                    
-                    # 3) 반투명 합성
+                    cv2.polylines(overlay, [projected_points2], True, (0, 100, 255), 4)
+                    cv2.fillPoly(overlay, [projected_points2], (0, 100, 255))
+
+                    # 3) 반투명 합성 (한 번만)
                     alpha = 0.3  # 투명도 (0=완전투명, 1=불투명)
-                    cv2.addWeighted(frame, alpha, frame, 1 - alpha, 0, frame)
+                    cv2.addWeighted(overlay, alpha, frame, 1 - alpha, 0, frame)
 
                     ###########################################################################################
                     
@@ -640,7 +693,31 @@ if __name__ == "__main__":
                                 rvec, tvec,
                                 camera_matrix, dist_coeffs
                             )
+                            # (1) predict
+                            prediction = kalman_3d.predict()  # shape=(6,1)
+                            px_pred, py_pred, pz_pred, vx_pred, vy_pred, vz_pred = prediction.ravel()
 
+                            # (2) 만약 공이 이번 프레임에 감지됐다면 -> correct
+                            # 공 측정값: point_in_marker_coord = (px, py, pz)
+                            measurement = np.array([
+                                [px],  # x
+                                [py],  # y
+                                [pz],  # z
+                            ], dtype=np.float32)
+
+                            estimated = kalman_3d.correct(measurement)
+                            ex, ey, ez, evx, evy, evz = estimated.ravel()
+
+                            detected_strike_points.append({
+                                        '3d_coord': (ex, ey, ez),
+                                        'rvec': rvec.copy(),
+                                        'tvec': tvec.copy()
+                                    })
+                            pt_2d = project_real_3d((ex, ey, ez), rvec, tvec, camera_matrix, dist_coeffs)
+                            pt_2d = np.array(pt_2d).ravel()
+                            cv2.circle(frame, (int(pt_2d[0]), int(pt_2d[1])), 8, (0,0,0), 1)
+                            
+                            
                             ### 스트라이크 판정
                             if (box_min[0] <= px <= box_max[0] and 
                                 box_min[1] <= py <= box_max[1] and
@@ -746,6 +823,7 @@ if __name__ == "__main__":
                         camera_matrix, dist_coeffs
                     )
                     #print("pt_2d_real", pt_2d_real)
+                    pt_2d_real = np.array(pt_2d_real).ravel()
                     cv2.circle(frame, (int(pt_2d_real[0]), int(pt_2d_real[1])), 8, (0, 200, 200), -1)
 
 
@@ -759,6 +837,7 @@ if __name__ == "__main__":
                         rvec, tvec,
                         camera_matrix, dist_coeffs
                     )                    
+                    pt_2d_real = np.array(pt_2d_real).ravel()
                     cv2.circle(frame, (int(pt_2d_real[0]), int(pt_2d_real[1])), 8, (255, 255, 0), -1)
             
             strike_ball_point = [dp['3d_coord'] for dp in detected_strike_points]
