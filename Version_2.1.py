@@ -605,7 +605,7 @@ if __name__ == "__main__":
                 out_count += 1
                 strike_count = 0
             
-            if ball_count >= 4:
+            if ball_count >= 5:
                 ball_count = 0
 
             cv2.putText(frame, f"S {strike_count}", (10, 60),

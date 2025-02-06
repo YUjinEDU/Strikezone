@@ -40,7 +40,7 @@ rotation_matrix = np.array([
 strike_zone_corners = np.dot(strike_zone_corners, rotation_matrix.T)
 
 # 카메라 설정
-cap = cv2.VideoCapture(1)  # 비브캠 사용
+cap = cv2.VideoCapture(2)  # 비브캠 사용
 cap.set(cv2.CAP_PROP_FRAME_WIDTH, 604)  # 프레임 너비 설정
 cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)  # 프레임 높이 설정
 
