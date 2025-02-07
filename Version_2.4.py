@@ -127,7 +127,7 @@ ball_zone_corners = np.array([
 ], dtype=np.float32)
 
 ball_zone_corners2 = ball_zone_corners.copy()
-ball_zone_corners2[:, 2] -= 0.1
+ball_zone_corners2[:, 2] -= 0.3
 
 box_edges = [
     (0,1), (1,2), (2,3), (3,0),  # 아래면
@@ -367,6 +367,18 @@ def draw_grid(frame, points, num_divisions):
 def is_point_in_polygon(point, polygon):
     """ 점(2D)이 polygon 내부에 있는지 확인 """
     return cv2.pointPolygonTest(np.array(polygon, dtype=np.int32), point, False) >= 0
+
+def crossed_plane(depth_z, depth_y, prev_pos, curr_pos):
+    """
+    depth_z: 기준 평면의 Z값 (위/아래)
+    depth_y: 기준 평면의 Y값 (앞/뒤)
+    prev_pos, curr_pos: 공의 이전/현재 3D 좌표 [x, y, z]
+    """
+    z_crossed = prev_pos is not None and curr_pos is not None and \
+                float(prev_pos[2]) >= depth_z and float(curr_pos[2]) < depth_z
+    y_crossed = prev_pos is not None and curr_pos is not None and \
+                float(prev_pos[1]) <= depth_y and float(curr_pos[1]) > depth_y  # Y는 증가해야 통과
+    return z_crossed and y_crossed
 
 def reset():
     global detected_strike_points,detected_ball_points, ar_started, strike_count, out_count, ball_count
@@ -634,6 +646,7 @@ def project_3d_to_record_sheet(point_3d, polygon_3d, rec_width, rec_height):
     rec_y = rec_height - norm_y * rec_height
     return rec_x, rec_y
 
+
 #############################################
 # 메인 실행
 #############################################
@@ -650,7 +663,7 @@ if __name__ == "__main__":
 
     # cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
     # cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
-
+    previous_ball_position = None
     while True:
         fps_start_time = time.time()
         ret, frame = cap.read()
@@ -717,6 +730,8 @@ if __name__ == "__main__":
                     projected_points2 = projected_points2.reshape(-1, 2).astype(int)
                     cv2.polylines(frame, [projected_points2], True, (0, 100, 255), 4)
 
+                    # print("projected_points", projected_points)
+                    # print("projected_points", projected_points.shape)
 
                     ###########################################################################################
                     
@@ -788,69 +803,90 @@ if __name__ == "__main__":
                             ).T[0]
 
                             px, py, pz = point_in_marker_coord
+
+                            if previous_ball_position is None:
+                                previous_ball_position = point_in_marker_coord
+                            
+                            previous_ball_position = point_in_marker_coord
+
                             #print(f"Ball 3D (Marker): ({px:.2f}, {py:.2f}, {pz:.2f})")
                                                     
                             ### 스트라이크 판정
                             # if (box_min[0] <= px <= box_max[0] and 
                             #     box_min[1] <= py <= box_max[1] and
                             #     box_min[2] <= pz <= box_max[2]):
-                            if (abs(estimated_Z - marker_z) < depth_threshold and
-                                  is_point_in_polygon(center, projected_points)):
+                            # if (abs(estimated_Z - marker_z) < depth_threshold and
+                            #       is_point_in_polygon(center, projected_points)):
                                 
-                                if(is_point_in_polygon(center, projected_points)):
-                                
-                                
-                                
-                                #cv2.circle(frame, (int(pt_2d_real[0]), int(pt_2d_real[1])), 8, (0,0,0), -1)
+                            #     if(is_point_in_polygon(center, projected_points)):
+                            plane_z = 0.0
+                            plane_z2 = -0.1
+                            plane_y   = 0.1
+                            
+                            
+                            
+                            # if (crossed_plane(plane_z, plane_y, previous_ball_position, point_in_marker_coord)) and \
+                            #     (crossed_plane(plane_z2, plane_y, previous_ball_position, point_in_marker_coord)):
 
-                                # (추가) 기록 후 매 프레임 다시 재투영
-                                    current_time = time.time()
-                                    if current_time - last_time > 1.0:
-                                        strike_count += 1
-                                        last_time = current_time
-                                        print(f"Strike Count Increased: {strike_count}")
+                            if ( point_in_marker_coord[1] >= abs(ball_zone_corners[0][1]) and
+                                   is_point_in_polygon(center, projected_points)): 
+                                    
+                                    print("1단계 통과", point_in_marker_coord)
 
-                                        detected_strike_points.append({
-                                            '3d_coord': point_in_marker_coord,
-                                            'rvec': rvec.copy(),
-                                            'tvec': tvec.copy()
-                                        })
-                                        add_strike_text_effect()
-                                        result = "strike"
-
-                                        ####################################################################
-                                        # Plotly 2D 기록지 업데이트
-                                        rec_x, rec_y = project_3d_to_record_sheet(point_in_marker_coord, ball_zone_corners2, record_sheet_width, record_sheet_height)
-                                        record_sheet_x.append(rec_x)
-                                        record_sheet_y.append(rec_y)
-                                        with record_sheet_fig.batch_update():
-                                            record_sheet_fig.data[0].x = record_sheet_x
-                                            record_sheet_fig.data[0].y = record_sheet_y
+                                    if ( point_in_marker_coord[1] >= abs(ball_zone_corners2[0][1]) and
+                                    is_point_in_polygon(center, projected_points2)):
                                         
-                                        # Plotly 3D 그래프 업데이트
-                                        pitch_points_3d_x.append(point_in_marker_coord[0])
-                                        pitch_points_3d_y.append(point_in_marker_coord[1])
-                                        pitch_points_3d_z.append(point_in_marker_coord[2])
-                                        with three_d_fig.batch_update():
-                                            three_d_fig.data[-1].x = pitch_points_3d_x
-                                            three_d_fig.data[-1].y = pitch_points_3d_y
-                                            three_d_fig.data[-1].z = pitch_points_3d_z
+                                        print("2단계 통과", point_in_marker_coord)
                                         
-                                        # ⬇️ 속도 측정 종료 및 계산
-                                        if start_time is not None:
-                                            end_time = time.time()
-                                            print("time end")
-                                            elapsed_time = end_time - start_time
-                                            print(f"Elapsed Time: {elapsed_time:.2f} sec")
+                                        # (추가) 기록 후 매 프레임 다시 재투영
+                                        current_time = time.time()
+                                        if current_time - last_time > 1.0:
+                                            strike_count += 1
+                                            last_time = current_time
+
+                                            print(f"Strike Count Increased: {strike_count}")
+
+                                            detected_strike_points.append({
+                                                '3d_coord': point_in_marker_coord,
+                                                'rvec': rvec.copy(),
+                                                'tvec': tvec.copy()
+                                            })
+                                            add_strike_text_effect()
+                                            result = "strike"
+
+                                            ####################################################################
+                                            # Plotly 2D 기록지 업데이트
+                                            rec_x, rec_y = project_3d_to_record_sheet(point_in_marker_coord, ball_zone_corners2, record_sheet_width, record_sheet_height)
+                                            record_sheet_x.append(rec_x)
+                                            record_sheet_y.append(rec_y)
+                                            with record_sheet_fig.batch_update():
+                                                record_sheet_fig.data[0].x = record_sheet_x
+                                                record_sheet_fig.data[0].y = record_sheet_y
                                             
-                                            if elapsed_time > 0.1:
-                                                speed = (distance_to_plate / elapsed_time) * 3.6  # km/h 변환
-                                                print(f"Ball Speed: {speed:.2f} km/h")
-                                                cv2.putText(frame, f"{speed:.1f} km/h", (300, 310),
-                                                            cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 255, 0), 2)
-                                            else:
-                                                print("Elapsed time too short, skipping speed calculation.")
-                                            start_time = None  
+                                            # Plotly 3D 그래프 업데이트
+                                            pitch_points_3d_x.append(point_in_marker_coord[0])
+                                            pitch_points_3d_y.append(point_in_marker_coord[1])
+                                            pitch_points_3d_z.append(point_in_marker_coord[2])
+                                            with three_d_fig.batch_update():
+                                                three_d_fig.data[-1].x = pitch_points_3d_x
+                                                three_d_fig.data[-1].y = pitch_points_3d_y
+                                                three_d_fig.data[-1].z = pitch_points_3d_z
+                                            
+                                            # # ⬇️ 속도 측정 종료 및 계산
+                                            # if start_time is not None:
+                                            #     end_time = time.time()
+                                            #     print("time end")
+                                            #     elapsed_time = end_time - start_time
+                                            #     print(f"Elapsed Time: {elapsed_time:.2f} sec")
+                                                
+                                            #     if elapsed_time > 0.1:
+                                            #         speed = (distance_to_plate / elapsed_time) * 3.6  # km/h 변환
+                                            #         print(f"Ball Speed: {speed:.2f} km/h")
+                                            #         cv2.putText(frame, f"{speed:.1f} km/h", (300, 310),
+                                            #                     cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 255, 0), 2)
+                                            #     else:
+                                            #         print("Elapsed time too short, skipping speed calculation.")
+                                            #     start_time = None  
                             
                             # ### 볼  판정
                             # if (abs(estimated_Z - marker_z) < depth_threshold and
