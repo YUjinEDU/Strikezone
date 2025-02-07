@@ -38,6 +38,47 @@ print("Keys in the calibration file:", calib_data.files)
 
 
 
+def kalman_update_with_gating(kf, measurement, gating_threshold=7.81):
+    # 예측 단계
+    predicted_state = kf.transitionMatrix @ kf.statePost
+    predicted_P = kf.transitionMatrix @ kf.errorCovPost @ kf.transitionMatrix.T + kf.processNoiseCov
+
+    # 측정 예측: H * predicted_state
+    measurement_prediction = kf.measurementMatrix @ predicted_state
+
+    # 혁신 (Innovation)
+    innovation = measurement.reshape(-1, 1) - measurement_prediction
+
+    # 혁신 공분산: S = H*P*H^T + R
+    S = kf.measurementMatrix @ predicted_P @ kf.measurementMatrix.T + kf.measurementNoiseCov
+
+    # 마할라노비스 거리 계산
+    try:
+        S_inv = np.linalg.inv(S)
+    except np.linalg.LinAlgError:
+        # S가 singular하면 업데이트하지 않습니다.
+        return
+
+    mahalanobis_distance = (innovation.T @ S_inv @ innovation).item()
+
+    # 게이팅: 임계값보다 작아야 업데이트 진행
+    if mahalanobis_distance < gating_threshold:
+        # 칼만 이득 계산
+        K = predicted_P @ kf.measurementMatrix.T @ S_inv
+
+        # 상태 갱신
+        kf.statePost = predicted_state + K @ innovation
+
+        # 오차 공분산 갱신
+        kf.errorCovPost = (np.eye(kf.statePost.shape[0]) - K @ kf.measurementMatrix) @ predicted_P
+    else:
+        # 이상치로 판단하여 측정 업데이트를 건너뛰고 예측 결과만 사용
+        kf.statePost = predicted_state
+        kf.errorCovPost = predicted_P
+        print("측정값 이상치 감지: 갱신 단계 생략 (마할라노비스 거리: {:.2f})".format(mahalanobis_distance))
+
+
+
 def init_kalman_3d():
     """
     상태: (x, y, z, vx, vy, vz) -> 6차원
@@ -127,7 +168,7 @@ ball_zone_corners = np.array([
 ], dtype=np.float32)
 
 ball_zone_corners2 = ball_zone_corners.copy()
-ball_zone_corners2[:, 2] -= 0.3
+ball_zone_corners2[:, 2] -= 0.1
 
 box_edges = [
     (0,1), (1,2), (2,3), (3,0),  # 아래면
@@ -809,6 +850,15 @@ if __name__ == "__main__":
                             
                             previous_ball_position = point_in_marker_coord
 
+                            # 1. 공의 측정값(3D 좌표)를 얻은 후
+                            measurement = np.array(point_in_marker_coord, dtype=np.float32)
+
+                            # 2. 게이팅 로직이 포함된 칼만 필터 업데이트 실행
+                            kalman_update_with_gating(kalman_3d, measurement, gating_threshold=7.81)
+
+                            # 3. 필터링된 좌표를 가져오기 (칼만 필터의 statePost의 상위 3개 값이 보정된 좌표)
+                            filtered_point = kalman_3d.statePost[:3].flatten()
+
                             #print(f"Ball 3D (Marker): ({px:.2f}, {py:.2f}, {pz:.2f})")
                                                     
                             ### 스트라이크 판정
@@ -819,10 +869,7 @@ if __name__ == "__main__":
                             #       is_point_in_polygon(center, projected_points)):
                                 
                             #     if(is_point_in_polygon(center, projected_points)):
-                            plane_z = 0.0
-                            plane_z2 = -0.1
-                            plane_y   = 0.1
-                            
+                        
                             
                             
                             # if (crossed_plane(plane_z, plane_y, previous_ball_position, point_in_marker_coord)) and \
@@ -972,7 +1019,7 @@ if __name__ == "__main__":
                         camera_matrix, dist_coeffs
                     )                    
                     pt_2d_real = np.array(pt_2d_real).ravel()
-                    cv2.circle(frame, (int(pt_2d_real[0]), int(pt_2d_real[1])), 8, (255, 255, 0), -1)
+                    cv2.circle(frame, (int(pt_2d_real[0]), int(pt_2d_real[1])), 9, (255, 255, 0), 3)
             
             strike_ball_point = [dp['3d_coord'] for dp in detected_strike_points]
             strike_ball_x = [p[0] for p in strike_ball_point]
