@@ -12,6 +12,9 @@ import threading
 import plotly.graph_objs as go # 그래프 생성 라이브러리
 import plotly.io as pio
 from plotly.subplots import make_subplots
+import dash
+from dash import dcc, html
+from dash.dependencies import Input, Output
 
 # Plotly 렌더러를 브라우저로 지정 (VSCode에서 사용)
 pio.renderers.default = "browser"
@@ -222,25 +225,6 @@ def get_box_corners_3d(box_min, box_max):
     return corners
 
 
-# 삼각형 확장 점들만 별도로 처리 (원하는 순서로 선을 연결)
-def create_triangle_trace(box_min, box_max):
-    x0, y0, z0 = box_min
-    x1, y1, z1 = box_max
-    # 삼각형 점은 원래 get_box_corners_3d()에서 아래와 같이 정의됨
-    triangle_points = np.array([
-        [(x0+x1)/2, z0, y1+0.1],
-        [(x0+x1)/2, z0, y1+0.3],
-    ], dtype=np.float32)
-    # 예를 들어, 삼각형의 선분을 연결
-    triangle_trace = go.Scatter3d(
-        x=triangle_points[:,0],
-        y=triangle_points[:,1],
-        z=triangle_points[:,2],
-        mode='lines+markers',
-        line=dict(color='red', width=4),
-        name='Triangle Extension'
-    )
-    return triangle_trace
 
 def project_box_corners_2d(corners_3d, rvec, tvec, camera_matrix, dist_coeffs):
     """
@@ -304,9 +288,9 @@ def create_box_trace(corners_3d, color='blue'):
         p1 = corners_3d[e[0]]
         p2 = corners_3d[e[1]]
         # x,y,z 좌표를 따로
-        x_ = [p1[0], p2[0]]
-        y_ = [p1[1], p2[1]]
-        z_ = [p1[2], p2[2]]
+        x_ = [float(p1[0]), float(p2[0])]
+        y_ = [float(p1[1]), float(p2[1])]
+        z_ = [float(p1[2]), float(p2[2])]
         line = go.Scatter3d(
             x=x_, y=y_, z=z_,
             mode='lines',
@@ -628,8 +612,8 @@ def project_point_onto_plane(point, plane_point1, plane_point2, plane_point3):
 # Plotly 2D 기록지와 3D 그래프 설정
 #############################################
 # 2D 기록지 (Pitch Record Sheet)
-record_sheet_width = 400
-record_sheet_height = 500
+record_sheet_width = 0.6
+record_sheet_height = 0.8
 
 record_sheet_fig = go.Figure()
 record_sheet_fig.add_scatter(x=[], y=[], mode='markers',
@@ -639,19 +623,19 @@ record_sheet_fig.update_layout(
     title="Pitch Record Sheet (2D)",
     xaxis=dict(range=[0, record_sheet_width], showgrid=False, zeroline=False),
     yaxis=dict(range=[0, record_sheet_height], showgrid=False, zeroline=False),
-    width=500,
-    height=700,
+    width=200,
+    height=300,
     shapes=[
         dict(
             type="rect",
-            x0=0, y0=0,
-            x1=record_sheet_width, y1=record_sheet_height,
+            x0=-record_sheet_width/2, y0= 0 ,
+            x1=record_sheet_width/2, y1=record_sheet_height/2,
             line=dict(color="RoyalBlue", width=3)
         )
     ]
 )
 record_sheet_fig.update_yaxes(autorange="reversed")
-record_sheet_fig.show()
+#record_sheet_fig.show()
 
 # 3D 인터랙티브 그래프
 def create_3d_polygon_trace(points, color, name):
@@ -694,7 +678,7 @@ three_d_fig.update_layout(
     width=700,
     height=700
 )
-three_d_fig.show()
+#three_d_fig.show()
 
 # 데이터 저장용 리스트 (2D와 3D 업데이트)
 record_sheet_x = []
@@ -716,34 +700,101 @@ def project_3d_to_record_sheet(point_3d, polygon_3d, rec_width, rec_height):
     rec_y = rec_height - norm_y * rec_height
     return rec_x, rec_y
 
+def create_2d_polygon_trace(points, color, name):
+    # points: (N,3) 배열이지만, 2D 기록지에서는 x, y 값만 사용합니다.
+    pts_closed = np.vstack([points, points[0]])
+    return go.Scatter(
+        x=pts_closed[:,0].tolist(),
+        y=pts_closed[:,2].tolist(),
+        mode='lines',
+        line=dict(color=color, width=2),
+        name=name
+    )
 
 
-def update_plots(point_in_marker_coord):
-    # 1. 2D 기록지 업데이트
-    # ball_zone_corners2를 기준으로 2D 좌표로 투영 (투영 함수는 이미 정의되어 있다고 가정)
-    rec_x, rec_y = project_3d_to_record_sheet(point_in_marker_coord, ball_zone_corners2, record_sheet_width, record_sheet_height)
-    record_sheet_x.append(rec_x)
-    record_sheet_y.append(rec_y)
+
+# Dash 앱 생성
+
+app = dash.Dash(__name__)
+
+app.layout = html.Div([
+    html.H1("Strike Zone Dashboard"),
+    html.Div([
+        dcc.Graph(id='record-sheet', figure=record_sheet_fig, style={'flex': '1'}),
+        dcc.Graph(id='three-d-plot', figure=three_d_fig, style={'flex': '1'})
+    ], style={'display': 'flex', 'flex-direction': 'row'}),
+    # 1초마다 업데이트하도록 Interval 컴포넌트 추가
+    dcc.Interval(
+        id='interval-component',
+        interval=1000,  # 1000ms = 1초
+        n_intervals=0
+    )
+])
+
+# Interval에 의해 호출되는 콜백 함수
+@app.callback(
+    [Output('record-sheet', 'figure'),
+     Output('three-d-plot', 'figure')],
+    [Input('interval-component', 'n_intervals')]
+)
+def update_graphs(n_intervals):
+    # 전역 리스트(record_sheet_x, record_sheet_y 등)는 카메라 스레드에서 업데이트됨.
+    # 여기서는 이 리스트들을 기반으로 새 Figure를 생성합니다.
+    ball_zone2_2d_trace = create_2d_polygon_trace(ball_zone_corners2, color='red', name='Ball Zone 2')
+
+    updated_record_sheet_fig = go.Figure(
+        data=[ go.Scatter(
+            x=list(map(float, record_sheet_x)),
+            y=list(map(float, record_sheet_y)),
+            mode='markers',
+            marker=dict(color='green', size=10),
+            name='Pitch Points'
+        ),
+        ball_zone2_2d_trace
+        ],
+        layout=go.Layout(
+            title="Pitch Record Sheet (2D)",
+            xaxis=dict(range=[-record_sheet_width/2, record_sheet_width/2], showgrid=True, zeroline=True),
+            yaxis=dict(range=[0, record_sheet_height/2], showgrid=True, zeroline=True)
+        )
+    )
     
-    # 2. 3D 그래프 업데이트
-    pitch_points_3d_x.append(point_in_marker_coord[0])
-    pitch_points_3d_y.append(point_in_marker_coord[1])
-    pitch_points_3d_z.append(point_in_marker_coord[2])
+    updated_three_d_fig = go.Figure(
+        data= strike_zone_trace + [ball_zone_trace, ball_zone2_trace,
+            go.Scatter3d(
+                x=list(map(float, pitch_points_3d_x)),
+                y=list(map(float, pitch_points_3d_y)),
+                z=list(map(float, pitch_points_3d_z)),
+                mode='markers',
+                marker=dict(color='orange', size=5),
+                name='Pitch Points'
+            )
+        ],
+        layout=go.Layout(
+            title="3D Interactive Pitching Zone",
+            scene=dict(xaxis_title='X', yaxis_title='Y', zaxis_title='Z', 
+                       camera=dict(
+                    # eye: 카메라의 초기 위치 (비율에 맞게 조정)
+                    eye=dict(x=-1.5, y=-0.6, z=1)
+                ),), 
+            
+        )
+    )
     
-    # 3. 두 Plotly 그래프 동시에 업데이트
-    with record_sheet_fig.batch_update():
-        record_sheet_fig.data[0].x = record_sheet_x
-        record_sheet_fig.data[0].y = record_sheet_y
-    
-    with three_d_fig.batch_update():
-        # 3D 그래프에서 마지막 데이터(traces)의 점들을 업데이트
-        three_d_fig.data[-1].x = pitch_points_3d_x
-        three_d_fig.data[-1].y = pitch_points_3d_y
-        three_d_fig.data[-1].z = pitch_points_3d_z
+    return updated_record_sheet_fig, updated_three_d_fig
+
+def run_dash():
+    # use_reloader=False 를 주어 Dash 서버가 별도의 스레드에서 재실행되지 않도록 합니다.
+    app.run_server(debug=True, use_reloader=False)
+
+
 #############################################
 # 메인 실행
 #############################################
 if __name__ == "__main__":
+
+    dash_thread = threading.Thread(target=run_dash)
+    dash_thread.start()
     create_camera_selection_gui()
     if selected_camera_index is None:
         print("No camera selected. Exiting.")
@@ -927,15 +978,15 @@ if __name__ == "__main__":
                             # if (crossed_plane(plane_z, plane_y, previous_ball_position, point_in_marker_coord)) and \
                             #     (crossed_plane(plane_z2, plane_y, previous_ball_position, point_in_marker_coord)):
 
-                            if ( point_in_marker_coord[1] >= abs(ball_zone_corners[0][1]) and
+                            if ( filtered_point[1] >= abs(ball_zone_corners[0][1]) and
                                    is_point_in_polygon(center, projected_points)): 
                                     
-                                    print("1단계 통과", point_in_marker_coord)
+                                    print("1단계 통과", filtered_point)
 
-                                    if ( point_in_marker_coord[1] >= abs(ball_zone_corners2[0][1]) and
+                                    if ( filtered_point[1] >= abs(ball_zone_corners2[0][1]) and
                                     is_point_in_polygon(center, projected_points2)):
                                         
-                                        print("2단계 통과", point_in_marker_coord)
+                                        print("2단계 통과", filtered_point)
                                         
                                         # (추가) 기록 후 매 프레임 다시 재투영
                                         current_time = time.time()
@@ -946,7 +997,7 @@ if __name__ == "__main__":
                                             print(f"Strike Count Increased: {strike_count}")
 
                                             detected_strike_points.append({
-                                                '3d_coord': point_in_marker_coord,
+                                                '3d_coord': filtered_point,
                                                 'rvec': rvec.copy(),
                                                 'tvec': tvec.copy()
                                             })
@@ -955,9 +1006,14 @@ if __name__ == "__main__":
 
                                             ####################################################################
                                             # Plotly 2D, 3D 기록지 업데이트
-                                            # 점 업데이트: 측정된 3D 좌표 (filtered_point 또는 point_in_marker_coord)를 사용
-                                            update_plots(filtered_point)
-                                            
+                                            ####################################################################
+                                            record_sheet_x.append(filtered_point[0])
+                                            record_sheet_y.append(filtered_point[2])
+                                            pitch_points_3d_x.append(filtered_point[0])
+                                            pitch_points_3d_y.append(filtered_point[1])
+                                            pitch_points_3d_z.append(filtered_point[2])
+
+
                                             # # ⬇️ 속도 측정 종료 및 계산
                                             # if start_time is not None:
                                             #     end_time = time.time()
@@ -1044,7 +1100,8 @@ if __name__ == "__main__":
                         camera_matrix, dist_coeffs
                     )
                     pt_2d_proj = pt_2d_proj.reshape(-1, 2)[0]
-                    cv2.circle(frame, (int(pt_2d_proj[0]), int(pt_2d_proj[1])), 8, (0, 200, 200), -1)
+                    #print("pt_2d_proj", pt_2d_proj)
+                    cv2.circle(frame, (int(pt_2d_proj[0]), int(pt_2d_proj[1])), 8, (0, 200, 200), 3)
 
 
             
@@ -1060,48 +1117,48 @@ if __name__ == "__main__":
                     pt_2d_real = np.array(pt_2d_real).ravel()
                     cv2.circle(frame, (int(pt_2d_real[0]), int(pt_2d_real[1])), 9, (255, 255, 0), 3)
             
-            strike_ball_point = [dp['3d_coord'] for dp in detected_strike_points]
-            strike_ball_x = [p[0] for p in strike_ball_point]
-            strike_ball_y = [p[1] for p in strike_ball_point]
-            strike_ball_z = [p[2] for p in strike_ball_point]
+            # strike_ball_point = [dp['3d_coord'] for dp in detected_strike_points]
+            # strike_ball_x = [p[0] for p in strike_ball_point]
+            # strike_ball_y = [p[1] for p in strike_ball_point]
+            # strike_ball_z = [p[2] for p in strike_ball_point]
 
-            strike_ball_text = [f'Strike {i+1}' for i in range(len(strike_ball_point))]
+            # strike_ball_text = [f'Strike {i+1}' for i in range(len(strike_ball_point))]
 
-            strike_ball_trace = go.Scatter3d(
-                x=strike_ball_x, y=strike_ball_y, z=strike_ball_z,
-                mode='markers+text',
-                marker=dict(size=5, color='yellow'),
-                text=strike_ball_text,
-                name='Strike Points'
-            )
+            # strike_ball_trace = go.Scatter3d(
+            #     x=strike_ball_x, y=strike_ball_y, z=strike_ball_z,
+            #     mode='markers+text',
+            #     marker=dict(size=5, color='yellow'),
+            #     text=strike_ball_text,
+            #     name='Strike Points'
+            # )
 
-            ball_ball_point = [dp['3d_coord'] for dp in detected_ball_points]
-            ball_ball_x = [p[0] for p in ball_ball_point]
-            ball_ball_y = [p[1] for p in ball_ball_point]
-            ball_ball_z = [p[2] for p in ball_ball_point]
+            # ball_ball_point = [dp['3d_coord'] for dp in detected_ball_points]
+            # ball_ball_x = [p[0] for p in ball_ball_point]
+            # ball_ball_y = [p[1] for p in ball_ball_point]
+            # ball_ball_z = [p[2] for p in ball_ball_point]
 
-            ball_ball_text = [f'Ball {i+1}' for i in range(len(ball_ball_point))]
+            # ball_ball_text = [f'Ball {i+1}' for i in range(len(ball_ball_point))]
 
-            ball_ball_trace = go.Scatter3d(
-                x=ball_ball_x, y=ball_ball_y, z=ball_ball_z,
-                mode='markers+text',
-                marker=dict(size=5, color='green'),
-                text=ball_ball_text,
-                name='Ball Points'
-            )
-            box_corners_3d = get_box_corners_3d(box_min, box_max)
-            plotly_coner_3d = create_box_trace(box_corners_3d, color='blue')
-            # (F) Layout 및 시각화
-            fig = go.Figure(data= plotly_coner_3d + [strike_ball_trace] + [ball_ball_trace])
-            fig.update_layout(
-                scene = dict(
-                    xaxis_title='X',
-                    yaxis_title='Y',
-                    zaxis_title='Z',
-                    aspectmode='cube'
-                ),
-                title="3D Strike Zone & Ball Points"
-            )
+            # ball_ball_trace = go.Scatter3d(
+            #     x=ball_ball_x, y=ball_ball_y, z=ball_ball_z,
+            #     mode='markers+text',
+            #     marker=dict(size=5, color='green'),
+            #     text=ball_ball_text,
+            #     name='Ball Points'
+            # )
+            # box_corners_3d = get_box_corners_3d(box_min, box_max)
+            # plotly_coner_3d = create_box_trace(box_corners_3d, color='blue')
+            # # (F) Layout 및 시각화
+            # fig = go.Figure(data= plotly_coner_3d + [strike_ball_trace] + [ball_ball_trace])
+            # fig.update_layout(
+            #     scene = dict(
+            #         xaxis_title='X',
+            #         yaxis_title='Y',
+            #         zaxis_title='Z',
+            #         aspectmode='cube'
+            #     ),
+            #     title="3D Strike Zone & Ball Points"
+            # )
 
 
             # 스트라이크/아웃 표시
@@ -1147,9 +1204,9 @@ if __name__ == "__main__":
             pitch_points_3d_y.clear()
             pitch_points_3d_z.clear()
             print("Data Cleared.")
-        elif key & 0xFF == ord('p'):
+        #elif key & 0xFF == ord('p'):
             # Plotly로 3D 그래프 표시
-            fig.show()
+            
             #print("3D Graph Displayed.")
         elif key & 0xFF == ord('t'):
             # 텍스트 이펙트 추가
