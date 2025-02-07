@@ -11,6 +11,7 @@ from tkinter import PhotoImage
 import threading
 import plotly.graph_objs as go # 그래프 생성 라이브러리
 import plotly.io as pio
+from plotly.subplots import make_subplots
 
 # Plotly 렌더러를 브라우저로 지정 (VSCode에서 사용)
 pio.renderers.default = "browser"
@@ -118,15 +119,15 @@ strike_zone_corners = np.array([
 ], dtype=np.float32)
 
 ball_zone_corners = np.array([
-    [-0.08, 0.09, -0.10],  # Bottom-left
-    [ 0.08, 0.09, -0.10],  # Bottom-right
-    [ 0.08, 0.31, -0.10],  # Top-right
-    [-0.08, 0.31, -0.10],  # Top-left
+    [-0.08, 0.09, 0],  # Bottom-left
+    [ 0.08, 0.09, 0],  # Bottom-right
+    [ 0.08, 0.31, 0],  # Top-right
+    [-0.08, 0.31, 0],  # Top-left
 
 ], dtype=np.float32)
 
 ball_zone_corners2 = ball_zone_corners.copy()
-ball_zone_corners2[:, 2] -= 0.2
+ball_zone_corners2[:, 2] -= 0.1
 
 box_edges = [
     (0,1), (1,2), (2,3), (3,0),  # 아래면
@@ -140,8 +141,8 @@ box_edges = [
 
 
 
-box_min = np.array([ -0.08,  -0.1, 0.10 ])  
-box_max = np.array([  0.08,  0.1, 0.30 ])  
+box_min = np.array([ -0.08,  -0.15, 0.10 ])  
+box_max = np.array([  0.08,  0, 0.30 ])  
 
 def get_box_corners_3d(box_min, box_max):
     """
@@ -166,8 +167,8 @@ def get_box_corners_3d(box_min, box_max):
 
     #삼각형 꼭짓점 (Z, Y축의 위치가 바뀐 상태!!)
     triangle_points = np.array([
-        [(x0+x1)/2, (z0+z1)/2+z0, y1],  # 8번
-        [(x0+x1)/2, (z0+z1)/2+z0, y1+0.2], # 9번
+        [(x0+x1)/2, z0, y1+0.1],  # 8번
+        [(x0+x1)/2, z0, y1+0.3], # 9번
     ], dtype=np.float32)
 
     # triangle_points = np.array([
@@ -777,7 +778,7 @@ if __name__ == "__main__":
 
                             # 마커와 공 깊이 비교
                             marker_z = tvec[0][2]
-                            depth_threshold = 0.05
+                            depth_threshold = 0.1  # 10cm
 
                             # 카메라 → 마커 좌표계
                             R_marker, _ = cv2.Rodrigues(rvec)
@@ -788,15 +789,6 @@ if __name__ == "__main__":
 
                             px, py, pz = point_in_marker_coord
                             #print(f"Ball 3D (Marker): ({px:.2f}, {py:.2f}, {pz:.2f})")
-
-                            # 실제 3D 높이를 이용해 검정 점 찍기
-                            # (직접 그릴 때)
-                            pt_2d_real = project_real_3d(
-                                point_in_marker_coord,
-                                rvec, tvec,
-                                camera_matrix, dist_coeffs
-                            )
-
                                                     
                             ### 스트라이크 판정
                             # if (box_min[0] <= px <= box_max[0] and 
