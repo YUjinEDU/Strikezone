@@ -1,3 +1,5 @@
+# ======================== 설정 및 초기화 (config.py로 분리 권장) ========================
+import os
 import cv2
 import cv2.aruco as aruco
 import numpy as np
@@ -15,10 +17,16 @@ from plotly.subplots import make_subplots
 import dash
 from dash import dcc, html
 from dash.dependencies import Input, Output
+import logging
+
+logging.basicConfig(level=logging.INFO)
+# 상수 및 설정값 (ex: 카메라 캘리브레이션 파일 경로, 마커 크기 등)
+CALIBRATION_PATH = "camera_calib.npz"
+ARUCO_MARKER_SIZE = 0.16
+SKIP_FRAMES = 1
 
 # Plotly 렌더러를 브라우저로 지정 (VSCode에서 사용)
 pio.renderers.default = "browser"
-
 
 last_time = 0.0
 last_draw_time = 0.0
@@ -29,17 +37,14 @@ start_time = None  # 속도 측정을 시작하는 시간
 end_time = None    # 속도 측정을 종료하는 시간
 distance_to_plate = 1  # 투구 거리 (미터)
 
-
 # Mediapipe 손 추적 설정
 mp_hands = mp.solutions.hands
 hands = mp_hands.Hands(max_num_hands=1, min_detection_confidence=0.7, min_tracking_confidence=0.7)
 mp_drawing = mp.solutions.drawing_utils
 
 # 카메라 캘리브레이션 데이터 로드
-calib_data = np.load("camera_calib.npz")
+calib_data = np.load(CALIBRATION_PATH)
 print("Keys in the calibration file:", calib_data.files)
-
-
 
 def kalman_update_with_gating(kf, measurement, gating_threshold=7.81):
     # 예측 단계
@@ -79,8 +84,6 @@ def kalman_update_with_gating(kf, measurement, gating_threshold=7.81):
         kf.statePost = predicted_state
         kf.errorCovPost = predicted_P
         print("측정값 이상치 감지: 갱신 단계 생략 (마할라노비스 거리: {:.2f})".format(mahalanobis_distance))
-
-
 
 def init_kalman_3d():
     """
@@ -135,24 +138,11 @@ kalman_3d = init_kalman_3d()
 kalman_trajectory_strike = []
 kalman_trajectory_ball   = []
 
-
-
-#asdasd
 camera_matrix = calib_data["camera_matrix"]
 dist_coeffs = calib_data["dist_coeffs"]
 
 # 공의 실제 반지름 (미터 단위)
 ball_radius_real = 0.036
-
-# 공중에 띄울 스트라이크 존의 3D 좌표 (마커 기준으로 상대적인 위치)
-# strike_zone_corners = np.array([
-#     [-0.215, 0.2837, 0],  # Bottom-left
-#     [ 0.215, 0.2837, 0],  # Bottom-right
-#     [ 0.215, 0.7851, 0],  # Top-right
-#     [-0.215, 0.7851, 0]   # Top-left
-# ], dtype=np.float32)
-# box_min = np.array([ -0.215,  -0.25, 0.00 ])  # x=-21.5cm, y=48cm,  z=0cm
-# box_max = np.array([  0.215,  0.25, 0.48 ])  # x=21.5cm,  y=98cm,  z=48cm
 
 strike_zone_corners = np.array([
     [-0.08, 0.15, 0],  # Bottom-left
@@ -182,8 +172,6 @@ box_edges = [
     (7,9), (9,6), # 삼각형 윗면
     (9,8)    # 삼각형 수직
 ]
-
-
 
 box_min = np.array([ -0.08,  -0.15, 0.10 ])  
 box_max = np.array([  0.08,  0, 0.30 ])  
@@ -215,16 +203,9 @@ def get_box_corners_3d(box_min, box_max):
         [(x0+x1)/2, z0, y1+0.3], # 9번
     ], dtype=np.float32)
 
-    # triangle_points = np.array([
-    #     [(x0+x1)/2,y0 ,(z0+z1)/2+z0],  # 8번
-    #     [(x0+x1)/2, y1,(z0+z1)/2+z0]     # 9번
-    # ], dtype=np.float32)
-
     # 삼각형 꼭짓점 합치기 (총 11개)
     corners = np.concatenate((corners, triangle_points), axis=0)
     return corners
-
-
 
 def project_box_corners_2d(corners_3d, rvec, tvec, camera_matrix, dist_coeffs):
     """
@@ -276,7 +257,6 @@ def draw_3d_box(frame, pts2d, color=(0,0,0), thickness=2):
     
     # 삼각형 (9->8)
     cv2.line(frame, tuple(pts[9]), tuple(pts[8]), color, thickness)
-    
 
 def create_box_trace(corners_3d, color='blue'):
     """
@@ -300,15 +280,12 @@ def create_box_trace(corners_3d, color='blue'):
         lines.append(line)
     return lines
 
-
-
 # 회전 행렬 (예: 스트라이크 존을 90도 회전시키는 용도)
 rotation_matrix = np.array([
     [1, 0, 0],
     [0, 0, -1],
     [0, 1, 0]
 ], dtype=np.float32)
-
 
 ball_zone_corners = np.dot(ball_zone_corners, rotation_matrix.T)
 ball_zone_corners2 = np.dot(ball_zone_corners2, rotation_matrix.T)
@@ -340,9 +317,6 @@ redUpper1 = (10, 255, 255)
 redLower2 = (170, 70, 50)
 redUpper2 = (180, 255, 255)
 pts = deque(maxlen=64)
-
-
-
 
 ###########################################################
 # 텍스트 이펙트: STRIKE!
@@ -394,8 +368,6 @@ def draw_effects(frame, result):
                 alive.append(eff)
             
     effects[:] = alive
-
-
 
 def draw_grid(frame, points, num_divisions):
     """ 사각형 내부에 격자를 그리는 함수 """
@@ -460,7 +432,6 @@ def detect_index_finger_only(results):
                 return True  # 검지 손가락만 들려 있음
     return False
 
-
 def estimate_ball_depth(radius, known_radius=0.036):
     """ 공의 깊이(Z)를 추정하는 함수 """
     f_x = camera_matrix[0, 0]
@@ -503,7 +474,6 @@ class CameraPreview:
             if not cap.isOpened():
                 self.show_error()
                 return
-            
             while not self.stop_event.is_set():
                 ret, frame = cap.read()
                 if not ret:
@@ -511,26 +481,41 @@ class CameraPreview:
                     break
                 frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
                 frame = imutils.resize(frame, width=320)
-                image = PhotoImage(data=cv2.imencode('.png', frame)[1].tobytes())
-                self.preview.configure(image=image)
-                self.preview.image = image
+                image_data = cv2.imencode('.png', frame)[1].tobytes()
+                try:
+                    # 백그라운드 스레드에서 메인 스레드로 update_preview 호출 예약
+                    self.preview.after(0, self.update_preview, image_data)
+                except RuntimeError:
+                    # main loop가 종료된 경우 오류가 발생하면 스레드를 종료합니다.
+                    break
             cap.release()
         threading.Thread(target=preview_thread, daemon=True).start()
     
+    def update_preview(self, image_data):
+        # 이 함수는 메인 스레드에서 실행됩니다.
+        image = PhotoImage(data=image_data)
+        self.preview.configure(image=image)
+        self.preview.image = image
+
     def show_error(self):
         black_frame = np.zeros((240, 320, 3), dtype=np.uint8)
         black_frame_rgb = cv2.cvtColor(black_frame, cv2.COLOR_BGR2RGB)
-        image = PhotoImage(data=cv2.imencode('.png', black_frame_rgb)[1].tobytes())
-        self.preview.configure(image=image, text="연결 안됨", foreground="red")
-        self.preview.image = image
+        image_data = cv2.imencode('.png', black_frame_rgb)[1].tobytes()
+        try:
+            self.preview.after(0, self.update_preview, image_data)
+        except RuntimeError:
+            pass
+        self.preview.configure(text="연결 안됨", foreground="red")
     
     def stop(self):
         self.stop_event.set()
     
     def on_select(self):
-        global selected_camera_index
+        global selected_camera_index, window
         selected_camera_index = self.camera_index
-        window.quit()
+        window.destroy()  # 창 완전 종료
+
+
 
 def create_camera_selection_gui():
     """ 카메라 선택 GUI 생성 """
@@ -559,6 +544,7 @@ def create_camera_selection_gui():
         for preview in previews:
             preview.stop()
         window.destroy()
+
 
     window.protocol("WM_DELETE_WINDOW", on_closing)
     window.mainloop()
@@ -612,6 +598,13 @@ def project_point_onto_plane(point, plane_point1, plane_point2, plane_point3):
 # Plotly 2D 기록지와 3D 그래프 설정
 #############################################
 # 2D 기록지 (Pitch Record Sheet)
+# 데이터 저장용 리스트 (2D와 3D 업데이트)
+
+record_sheet_x = []
+record_sheet_y = []
+pitch_points_3d_x = []
+pitch_points_3d_y = []
+pitch_points_3d_z = []
 record_sheet_width = 0.6
 record_sheet_height = 0.8
 
@@ -649,7 +642,6 @@ def create_3d_polygon_trace(points, color, name):
         name=name
     )
     return trace
-    
 
 # 스트라이크존 박스: box_corners_3d
 box_corners_3d = get_box_corners_3d(box_min, box_max)
@@ -659,16 +651,19 @@ ball_zone_trace = create_3d_polygon_trace(ball_zone_corners, color='blue', name=
 ball_zone2_trace = create_3d_polygon_trace(ball_zone_corners2, color='red', name='Ball Zone 2')
 
 pitch_points_3d_trace = go.Scatter3d(
-    x=[], y=[], z=[],
-    mode='markers',
+    x=list(map(float, pitch_points_3d_x)),
+    y=list(map(float, pitch_points_3d_y)),
+    z=list(map(float, pitch_points_3d_z)),
+    mode='markers+text',  # 텍스트와 마커 모두 표시
     marker=dict(color='orange', size=5),
+    text=[str(i+1) for i in range(len(pitch_points_3d_x))],  # 순서 번호 표시
+    textposition='top center',
     name='Pitch Points'
 )
 
 # 4. 모든 트레이스를 하나의 데이터 리스트에 결합합니다.
 # strike_zone_traces는 리스트이므로 다른 트레이스와 함께 결합합니다.
 data_traces = strike_zone_trace + [ball_zone_trace, ball_zone2_trace, pitch_points_3d_trace]
-
 
 # 5. 3D 피규어 생성
 three_d_fig = go.Figure(data=data_traces)
@@ -680,12 +675,7 @@ three_d_fig.update_layout(
 )
 #three_d_fig.show()
 
-# 데이터 저장용 리스트 (2D와 3D 업데이트)
-record_sheet_x = []
-record_sheet_y = []
-pitch_points_3d_x = []
-pitch_points_3d_y = []
-pitch_points_3d_z = []
+
 
 # 2D 기록지용 좌표 변환 함수
 def project_3d_to_record_sheet(point_3d, polygon_3d, rec_width, rec_height):
@@ -711,10 +701,7 @@ def create_2d_polygon_trace(points, color, name):
         name=name
     )
 
-
-
 # Dash 앱 생성
-
 app = dash.Dash(__name__)
 
 app.layout = html.Div([
@@ -746,8 +733,10 @@ def update_graphs(n_intervals):
         data=[ go.Scatter(
             x=list(map(float, record_sheet_x)),
             y=list(map(float, record_sheet_y)),
-            mode='markers',
-            marker=dict(color='green', size=20),
+            mode='markers+text',  # 텍스트와 마커 모두 표시
+            marker=dict(color='blue', size=20),
+            text=[str(i+1) for i in range(len(record_sheet_x))],  # 순서 번호 표시
+            textposition='top center',
             name='Pitch Points'
         ),
         ball_zone2_2d_trace
@@ -765,8 +754,10 @@ def update_graphs(n_intervals):
                 x=list(map(float, pitch_points_3d_x)),
                 y=list(map(float, pitch_points_3d_y)),
                 z=list(map(float, pitch_points_3d_z)),
-                mode='markers',
-                marker=dict(color='orange', size=5),
+                mode='markers+text',  # 텍스트와 마커 모두 표시
+                marker=dict(color='blue', size=6),
+                text=[str(i+1) for i in range(len(pitch_points_3d_x))],  # 순서 번호 표시
+                textposition='top center',
                 name='Pitch Points'
             )
         ],
@@ -786,7 +777,6 @@ def update_graphs(n_intervals):
 def run_dash():
     # use_reloader=False 를 주어 Dash 서버가 별도의 스레드에서 재실행되지 않도록 합니다.
     app.run_server(debug=True, use_reloader=False)
-
 
 #############################################
 # 메인 실행
@@ -811,9 +801,14 @@ if __name__ == "__main__":
     while True:
         fps_start_time = time.time()
         ret, frame = cap.read()
+        
         if not ret:
             print("프레임을 읽을 수 없습니다.")
             break
+
+            # 분석용 프레임과 오버레이 프레임 분리
+        analysis_frame = frame.copy()  # 분석용 프레임
+        overlay_frame = frame.copy()   # 그래픽 표시용 프레임
 
         # Mediapipe 손 감지
         rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
@@ -825,7 +820,7 @@ if __name__ == "__main__":
                 ar_started = True
                 print("AR Started!")
             else:
-                cv2.putText(frame, "Show your hand!", (10, 100),
+                cv2.putText(overlay_frame, "Show your hand!", (10, 100),
                             cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 255), 2)
             
         
@@ -845,18 +840,16 @@ if __name__ == "__main__":
                     start_time = time.time()  # ⬅️ 타이머 시작
                     print("Index Finger Detected! Timing begins.")
 
-
-            gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+            gray = cv2.cvtColor(analysis_frame, cv2.COLOR_BGR2GRAY)
             detector = aruco.ArucoDetector(aruco_dict, parameters)
             corners, ids, rejected = detector.detectMarkers(gray)
 
             if ids is not None:
                 # 마커 포즈 추정
                 rvecs, tvecs, _ = aruco.estimatePoseSingleMarkers(
-                    corners, 0.16, camera_matrix, dist_coeffs
+                    corners, ARUCO_MARKER_SIZE, camera_matrix, dist_coeffs
                 )
 
-                
                 for rvec, tvec in zip(rvecs, tvecs):
                     #cv2.drawFrameAxes(frame, camera_matrix, dist_coeffs, rvec, tvec, 0.05)
 
@@ -865,14 +858,14 @@ if __name__ == "__main__":
                         ball_zone_corners, rvec, tvec, camera_matrix, dist_coeffs
                     )
                     projected_points = projected_points.reshape(-1, 2).astype(int)
-                    cv2.polylines(frame, [projected_points], True, (200, 200, 0), 4)
+                    cv2.polylines(overlay_frame, [projected_points], True, (200, 200, 0), 4)
 
                     # 2) 두 번째 영역
                     projected_points2, _ = cv2.projectPoints(
                         ball_zone_corners2, rvec, tvec, camera_matrix, dist_coeffs
                     )
                     projected_points2 = projected_points2.reshape(-1, 2).astype(int)
-                    cv2.polylines(frame, [projected_points2], True, (0, 100, 255), 4)
+                    cv2.polylines(overlay_frame, [projected_points2], True, (0, 100, 255), 4)
 
                     # print("projected_points", projected_points)
                     # print("projected_points", projected_points.shape)
@@ -888,18 +881,16 @@ if __name__ == "__main__":
                         camera_matrix, dist_coeffs
                     )
                     #print("pts2d", pts2d)
-                    draw_3d_box(frame, pts2d, color=(0,0,0), thickness=4)
+                    draw_3d_box(overlay_frame, pts2d, color=(0,0,0), thickness=4)
                     
                     # 앞면 4개 코너만 사용
                     grid_pts2d = pts2d[[0,1,5,4]]  
-                    draw_grid(frame, grid_pts2d, 3)
+                    draw_grid(overlay_frame, grid_pts2d, 3)
 
                     ###########################################################################################
 
-                    
-            
                     # 공(녹) 검출
-                    blurred = cv2.GaussianBlur(frame, (11, 11), 0)
+                    blurred = cv2.GaussianBlur(analysis_frame, (11, 11), 0)
                     hsv = cv2.cvtColor(blurred, cv2.COLOR_BGR2HSV)
                     mask_green = cv2.inRange(hsv, greenLower, greenUpper)
                     # mask_red1 = cv2.inRange(hsv, redLower1, redUpper1)
@@ -913,7 +904,7 @@ if __name__ == "__main__":
                     cnts = imutils.grab_contours(cnts)
                     center = None
 
-                    if len(cnts) > 0:
+                    if len(cnts) > 1:
                         c = max(cnts, key=cv2.contourArea)
                         ((x, y), radius) = cv2.minEnclosingCircle(c)
                         M = cv2.moments(c)
@@ -924,8 +915,8 @@ if __name__ == "__main__":
 
                         if radius > 1:
                             # 공 화면 표시 (노란 원 + 빨간 점)
-                            cv2.circle(frame, (int(x), int(y)), int(radius), (0, 255, 255), 2)
-                            cv2.circle(frame, center, 5, (0, 0, 255), -1)
+                            cv2.circle(overlay_frame, (int(x), int(y)), int(radius), (0, 255, 255), 2)
+                            cv2.circle(overlay_frame, center, 5, (0, 0, 255), -1)
                             
                             # 공 깊이 추정, 카메라 좌표계
                             estimated_Z = estimate_ball_depth(radius)
@@ -973,8 +964,6 @@ if __name__ == "__main__":
                                 
                             #     if(is_point_in_polygon(center, projected_points)):
                         
-                            
-                            
                             # if (crossed_plane(plane_z, plane_y, previous_ball_position, point_in_marker_coord)) and \
                             #     (crossed_plane(plane_z2, plane_y, previous_ball_position, point_in_marker_coord)):
 
@@ -1010,9 +999,9 @@ if __name__ == "__main__":
                                             record_sheet_x.append(filtered_point[0])
                                             record_sheet_y.append(filtered_point[2])
                                             pitch_points_3d_x.append(filtered_point[0])
-                                            pitch_points_3d_y.append(filtered_point[2])
-                                            pitch_points_3d_z.append(filtered_point[1])
-
+                                            #pitch_points_3d_y.append(filtered_point[1])
+                                            pitch_points_3d_y.append(0.1)
+                                            pitch_points_3d_z.append(filtered_point[2])
 
                                             # # ⬇️ 속도 측정 종료 및 계산
                                             # if start_time is not None:
@@ -1065,22 +1054,20 @@ if __name__ == "__main__":
                             #                 print("Elapsed time too short, skipping speed calculation.")
                             #             start_time = None 
 
-                                
-                            
                             # (선택) 마커/공 깊이 텍스트 표시
                             marker_depth_text = f"Marker Z: {marker_z:.2f} m"
                             ball_depth_text = f"Ball Z: {estimated_Z:.2f} m"
                             marker_position = tuple(map(int, pts2d[0]))  # 첫 번째 코너
 
-                            cv2.putText(frame, marker_depth_text,
+                            cv2.putText(overlay_frame, marker_depth_text,
                                         (marker_position[0], marker_position[1] - 10),
                                         cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 0, 0), 2)
                             
-                            cv2.putText(frame, ball_depth_text,
+                            cv2.putText(overlay_frame, ball_depth_text,
                                         (center[0]+20, center[1]+30),
                                         cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 2)
 
-            draw_effects(frame, result)
+            draw_effects(overlay_frame, result)
             # 이전에 저장된 점들도 다시 재투영 → 계속 화면에 표시
             last_ball_point = None
             
@@ -1089,7 +1076,7 @@ if __name__ == "__main__":
             plane_pt2 = ball_zone_corners2[1]
             plane_pt3 = ball_zone_corners2[2]
 
-            for point_data in detected_strike_points:
+            for idx, point_data in enumerate(detected_strike_points):
                 if ids is not None:
                     # 원래 마커 좌표계의 스트라이크 점을 평면 위로 투영
                     point_on_plane = project_point_onto_plane(point_data['3d_coord'],
@@ -1100,11 +1087,14 @@ if __name__ == "__main__":
                         camera_matrix, dist_coeffs
                     )
                     pt_2d_proj = pt_2d_proj.reshape(-1, 2)[0]
-                    #print("pt_2d_proj", pt_2d_proj)
-                    cv2.circle(frame, (int(pt_2d_proj[0]), int(pt_2d_proj[1])), 8, (0, 200, 200), 3)
+                    # 하얀 원 그리기
+                    cv2.circle(overlay_frame, (int(pt_2d_proj[0]), int(pt_2d_proj[1])), 8, (255, 255, 255), 3)
+                    # 순번 텍스트 추가 (번호가 원의 왼쪽 위에 표시되도록 오프셋 조정)
+                    cv2.putText(overlay_frame, str(idx+1), 
+                                (int(pt_2d_proj[0]) - 10, int(pt_2d_proj[1]) - 10),
+                                cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 0), 2)
 
 
-            
             for point_data in detected_ball_points:
 
                 if ids is not None:
@@ -1115,52 +1105,8 @@ if __name__ == "__main__":
                         camera_matrix, dist_coeffs
                     )                    
                     pt_2d_real = np.array(pt_2d_real).ravel()
-                    cv2.circle(frame, (int(pt_2d_real[0]), int(pt_2d_real[1])), 9, (255, 255, 0), 3)
+                    cv2.circle(overlay_frame, (int(pt_2d_real[0]), int(pt_2d_real[1])), 9, (255, 255, 0), 3)
             
-            # strike_ball_point = [dp['3d_coord'] for dp in detected_strike_points]
-            # strike_ball_x = [p[0] for p in strike_ball_point]
-            # strike_ball_y = [p[1] for p in strike_ball_point]
-            # strike_ball_z = [p[2] for p in strike_ball_point]
-
-            # strike_ball_text = [f'Strike {i+1}' for i in range(len(strike_ball_point))]
-
-            # strike_ball_trace = go.Scatter3d(
-            #     x=strike_ball_x, y=strike_ball_y, z=strike_ball_z,
-            #     mode='markers+text',
-            #     marker=dict(size=5, color='yellow'),
-            #     text=strike_ball_text,
-            #     name='Strike Points'
-            # )
-
-            # ball_ball_point = [dp['3d_coord'] for dp in detected_ball_points]
-            # ball_ball_x = [p[0] for p in ball_ball_point]
-            # ball_ball_y = [p[1] for p in ball_ball_point]
-            # ball_ball_z = [p[2] for p in ball_ball_point]
-
-            # ball_ball_text = [f'Ball {i+1}' for i in range(len(ball_ball_point))]
-
-            # ball_ball_trace = go.Scatter3d(
-            #     x=ball_ball_x, y=ball_ball_y, z=ball_ball_z,
-            #     mode='markers+text',
-            #     marker=dict(size=5, color='green'),
-            #     text=ball_ball_text,
-            #     name='Ball Points'
-            # )
-            # box_corners_3d = get_box_corners_3d(box_min, box_max)
-            # plotly_coner_3d = create_box_trace(box_corners_3d, color='blue')
-            # # (F) Layout 및 시각화
-            # fig = go.Figure(data= plotly_coner_3d + [strike_ball_trace] + [ball_ball_trace])
-            # fig.update_layout(
-            #     scene = dict(
-            #         xaxis_title='X',
-            #         yaxis_title='Y',
-            #         zaxis_title='Z',
-            #         aspectmode='cube'
-            #     ),
-            #     title="3D Strike Zone & Ball Points"
-            # )
-
-
             # 스트라이크/아웃 표시
             if strike_count >= 3:
                 out_count += 1
@@ -1169,20 +1115,21 @@ if __name__ == "__main__":
             if ball_count >= 5:
                 ball_count = 0
 
-            cv2.putText(frame, f"S {strike_count}", (10, 60),
+            cv2.putText(overlay_frame, f"S {strike_count}", (10, 60),
                         cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 200, 200), 2)
-            cv2.putText(frame, f"B {ball_count}", (10, 110),
+            cv2.putText(overlay_frame, f"B {ball_count}", (10, 110),
                         cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 255, 0), 2)
-            cv2.putText(frame, f"O {out_count}", (10, 160),
+            cv2.putText(overlay_frame, f"O {out_count}", (10, 160),
                         cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 255), 2)
 
         # FPS 계산
         fps_end_time = time.time()
         fps = 1.0 / (fps_end_time - fps_start_time + 1e-8)
-        cv2.putText(frame, f"FPS: {int(fps)}", (10, 30),
+        cv2.putText(overlay_frame, f"FPS: {int(fps)}", (10, 30),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 2)
 
-        cv2.imshow('ARUCO Tracker with Strike Zone', frame)
+        cv2.imshow('ARUCO Tracker with Strike Zone', overlay_frame)
+        cv2.imshow('Original', frame)
 
         key = cv2.waitKey(1)
         if key & 0xFF == ord('q'):
@@ -1190,10 +1137,10 @@ if __name__ == "__main__":
         elif key & 0xFF == ord('r'):
             reset()
         elif key & 0xFF == ord('s'):
-            cv2.imwrite("strike_zone.png", frame)
+            cv2.imwrite("strike_zone.png", overlay_frame)
             print("Strike zone image saved.")
         elif key & 0xFF == ord('b'):
-            cv2.imwrite("ball_zone.png", frame)
+            cv2.imwrite("ball_zone.png", overlay_frame)
             print("Ball zone image saved.")
         elif key & 0xFF == ord('c'):
             detected_strike_points = []
@@ -1214,6 +1161,6 @@ if __name__ == "__main__":
             add_ball_text_effect()
             print("Text Effect Added.")
 
-
     cap.release()
     cv2.destroyAllWindows()
+    os._exit(0) # 창이 모두 닫히면 프로그램 종료
