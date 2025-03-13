@@ -40,6 +40,10 @@ def main():
     frame_count = 0
     last_time = 0.0
     
+    # 궤적 관련 플래그와 타이머 변수 추가
+    show_trajectory = False
+    trajectory_display_start_time = None
+    
     # 점수 카운트
     strike_count = 0
     ball_count = 0
@@ -286,23 +290,40 @@ def main():
                             estimated_Z
                         ])
                         
+                        # 칼만 필터 업데이트 (카메라 좌표계)
+                        filtered_point_kalman = kalman_tracker.update_with_gating(np.array(ball_3d_cam, dtype=np.float32))
+
+                        # 이미지 좌표로 투영: 카메라 좌표계이므로, rvec과 tvec를 (0,0,0)로 사용
+                        projected_pt = aruco_detector.project_points(
+                            np.array([filtered_point_kalman]), 
+                            np.zeros((3,1), dtype=np.float32), 
+                            np.zeros((3,1), dtype=np.float32)
+                        )[0]
+
+                        # 2D 궤적 기록 (projected_pt는 이미지 좌표)
+                        ball_detector.track_trajectory((projected_pt[0], projected_pt[1]))
+
+
+                        
+                        
                         # 카메라 → 마커 좌표계 변환
-                        point_in_marker_coord = aruco_detector.point_to_marker_coord(ball_3d_cam, rvec, tvec)
+                        filtered_point = aruco_detector.point_to_marker_coord(filtered_point_kalman, rvec, tvec)
                         
                         if previous_ball_position is None:
-                            previous_ball_position = point_in_marker_coord
+                            previous_ball_position = filtered_point
                         
-                        previous_ball_position = point_in_marker_coord
+                        previous_ball_position = filtered_point
                         
-                        # 칼만 필터 업데이트
-                        filtered_point = kalman_tracker.update_with_gating(np.array(point_in_marker_coord, dtype=np.float32))
+ 
                         
                         # 투구 속도 계산
                         current_time = time.time()
                         ball_positions_history.append(filtered_point)
                         ball_times_history.append(current_time)
+                        
+                        
 
-                                                # 깊이 정보 표시
+                        # 깊이 정보 표시
                         marker_depth_text = f"marker Z: {tvec[0][2]:.2f} m"
                         ball_depth_text = f"ball Z: {estimated_Z:.2f} m"
                         
@@ -372,7 +393,7 @@ def main():
                             'pitch_results': pitch_results,
                             'pitch_history': pitch_history
                         }
-                        print(f"스트라이크 판정 후 대시보드 데이터 업데이트: pitch_count={len(detected_strike_points) + len(detected_ball_points)}")
+                        #print(f"스트라이크 판정 후 대시보드 데이터 업데이트: pitch_count={len(detected_strike_points) + len(detected_ball_points)}")
                         dashboard.update_data(current_dashboard_data)
                         
                         # 궤적 기록
@@ -487,6 +508,9 @@ def main():
                                     # 궤적 기록 중단
                                     record_trajectory = False
                                     
+                                    show_trajectory = True
+                                    trajectory_display_start_time = time.time()
+                                    
                                     # 스트라이크가 결정되면 즉시 대시보드 데이터 업데이트
                                     current_dashboard_data = {
                                         'record_sheet_points': list(zip(record_sheet_x, record_sheet_y)),
@@ -506,8 +530,7 @@ def main():
                                     print(f"스트라이크 판정 후 대시보드 데이터 업데이트: pitch_count={len(detected_strike_points) + len(detected_ball_points)}")
                                     dashboard.update_data(current_dashboard_data)
                                     
-                                    # 텍스트 효과 그리기
-                                    text_effect.draw(overlay_frame, result)
+
                                     # 플래그 초기화
                                     zone_step1 = False
                                     zone_step2 = False
@@ -572,6 +595,17 @@ def main():
                                 
                                 # 궤적 기록 중단
                                 record_trajectory = False
+                                show_trajectory = True
+                                trajectory_display_start_time = time.time()
+                        
+                        # 판정 이벤트 발생 시에만 궤적을 화면에 그리기
+                        if show_trajectory:
+                            ball_detector.draw_trajectory(overlay_frame)
+                            # 2초 경과 후 궤적 시각화 종료 및 기록 초기화
+                            if time.time() - trajectory_display_start_time >= 2.0:
+                                show_trajectory = False
+                                ball_detector.pts.clear()  # 궤적 기록 초기화        
+                              
                 
         # 평면 좌표 정의
         if ids is not None and len(detected_strike_points + detected_ball_points) > 0:
@@ -653,7 +687,9 @@ def main():
                     cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 255), 2)
         cv2.putText(overlay_frame, f"speed: {display_velocity:.1f} km/h",
                     (10, 210), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 255), 2)
-    
+        # 텍스트 효과 그리기
+        text_effect.draw(overlay_frame, result)
+        
         # FPS 계산
         fps_end_time = time.time()
         fps = 1.0 / (fps_end_time - fps_start_time + 1e-8)

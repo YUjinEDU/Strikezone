@@ -130,13 +130,18 @@ class BallDetector:
         """궤적 추적"""
         self.pts.appendleft(center)
         
-    def draw_trajectory(self, frame, color=(0, 0, 255)):
+    def draw_trajectory(self, frame, color=(255, 255, 255)):
         """궤적 그리기"""
         for i in range(1, len(self.pts)):
-            if self.pts[i - 1] is None or self.pts[i] is None:
+            print(self.pts[i - 1], self.pts[i])
+            pt1 = tuple(map(int, self.pts[i - 1]))
+            pt2 = tuple(map(int, self.pts[i]))
+            
+            if pt1 is None or pt2 is None:
                 continue
+               
             thickness = int(np.sqrt(64 / float(i + 1)) * 2.5)
-            cv2.line(frame, self.pts[i - 1], self.pts[i], color, thickness)
+            cv2.line(frame, pt1, pt2, color, thickness)
 
 class PoseEstimator:
     def __init__(self):
