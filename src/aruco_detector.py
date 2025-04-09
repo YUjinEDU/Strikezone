@@ -34,10 +34,22 @@ class ArucoDetector:
     
     def project_points(self, points_3d, rvec, tvec):
         """3D 점들을 영상 평면에 투영"""
-        projected_points, _ = cv2.projectPoints(
-            points_3d, rvec, tvec, self.camera_matrix, self.dist_coeffs
-        )
-        return projected_points.reshape(-1, 2).astype(int)
+        try:
+            projected_points, _ = cv2.projectPoints(
+                points_3d, rvec, tvec, self.camera_matrix, self.dist_coeffs
+            )
+            
+            # NaN이나 무한대 값 확인
+            if np.any(np.isnan(projected_points)) or not np.all(np.isfinite(projected_points)):
+                print("Warning: NaN or Inf values detected in projection")
+                # 기본 좌표로 대체 또는 유효한 값만 남기기
+                projected_points = np.array([[[0, 0]] * len(points_3d)])
+            
+            return projected_points.reshape(-1, 2).astype(int)
+        except Exception as e:
+            print(f"투영 오류: {e}")
+            # 오류 발생 시 안전한 값 반환
+            return np.array([[0, 0]] * len(points_3d), dtype=int)
     
     def get_box_corners_3d(self, box_min, box_max):
         """3D 박스 코너 좌표 계산"""

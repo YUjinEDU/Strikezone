@@ -40,17 +40,17 @@ GREEN_UPPER = (64, 255, 255)
 # ], dtype=np.float32)
 
 # BALL_ZONE_CORNERS = np.array([
-#     [-0.08, 0.09, 0],  # Bottom-left
-#     [ 0.08, 0.09, 0],  # Bottom-right
-#     [ 0.08, 0.31, 0],  # Top-right
-#     [-0.08, 0.31, 0],  # Top-left
+#     [-0.08, 0.13, 0],  # Bottom-left
+#     [ 0.08, 0.13, 0],  # Bottom-right
+#     [ 0.08, 0.27, 0],  # Top-right
+#     [-0.08, 0.27, 0],  # Top-left
 # ], dtype=np.float32)
 
 
 """
 스트라이크존 Big
 """
-# 영역 설정
+#영역 설정
 STRIKE_ZONE_CORNERS = np.array([
     [-0.15, 0.25, 0],  # Bottom-left
     [ 0.15, 0.25, 0],  # Bottom-right
@@ -60,20 +60,20 @@ STRIKE_ZONE_CORNERS = np.array([
 
 
 BALL_ZONE_CORNERS = np.array([
-    [-0.15, 0.25, 0],  # Bottom-left
-    [ 0.15, 0.25, 0],  # Bottom-right
-    [ 0.15, 0.65, 0],  # Top-right
-    [-0.15, 0.65, 0],  # Top-left
+    [-0.15, 0.24, 0],  # Bottom-left
+    [ 0.15, 0.24, 0],  # Bottom-right
+    [ 0.15, 0.66, 0],  # Top-right
+    [-0.15, 0.66, 0],  # Top-left
 ], dtype=np.float32)
 
 
-ZONE_Z_DIFF = 0.25
+ZONE_Z_DIFF = 0.20  # 스트라이크존과 볼존의 Z축 차이 (20cm)
 # 오프셋 설정
 BOX_X_OFFSET = 0.00   # 좌우 오프셋 없음
-BOX_Y_MIN = -ZONE_Z_DIFF     # 앞쪽으로 20cm
+BOX_Y_MIN = -ZONE_Z_DIFF     # 뒤쪽으로 10cm
 BOX_Y_MAX = 0.0       # 마커 위치까지
-BOX_Z_MIN = 0.25      # 바닥에서 20cm
-BOX_Z_MAX = 0.65      # 최대 높이 65cm
+BOX_Z_MIN = STRIKE_ZONE_CORNERS[0, 1]      # 바닥에서 25cm
+BOX_Z_MAX = STRIKE_ZONE_CORNERS[2, 1]      # 최대 높이 65cm
 
 # 박스 크기를 스트라이크 존에서 자동 계산
 def calculate_box_from_strike_zone(strike_zone, x_offset=0.0):

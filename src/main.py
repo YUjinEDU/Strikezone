@@ -12,10 +12,11 @@ import math
 from config import *
 from camera import CameraManager
 from aruco_detector import ArucoDetector
-from tracker import KalmanTracker, BallDetector, HandDetector
+from tracker_v1 import KalmanTracker, BallDetector, HandDetector
 from effects import TextEffect
 from dashboard import Dashboard
 from kalman_filter import KalmanFilter3D
+from baseball_scoreboard import BaseballScoreboard
 
 def main():
     # 전역 종료 이벤트
@@ -37,6 +38,13 @@ def main():
     ar_started = False
     zone_step1 = False
     zone_step2 = False
+    
+    prev_distance_to_plane1 = None # 이전 프레임 거리 (초기값 None)
+    prev_distance_to_plane2 = None
+    
+    # 통과 임계값 (0 또는 약간의 음수값으로 노이즈 제거)
+    pass_threshold = 0.0
+
     frame_count = 0
     last_time = 0.0
     
@@ -102,7 +110,7 @@ def main():
         
     elif user_input == "2":
         # 비디오 파일 선택
-        video_path = "./video/test_video_1.mp4"
+        video_path = "./video/video_BBS.mp4"
         cap = cv2.VideoCapture(video_path)
         is_video_mode = True
         
@@ -133,13 +141,33 @@ def main():
     
     # ArUco 검출기 초기화
     aruco_detector = ArucoDetector(ARUCO_MARKER_SIZE, camera_matrix, dist_coeffs)
-    
-    # 공 검출기 초기화 (녹색공)
+    ######################################################################################3
+    ######################################################################################3
+    ######################################################################################3
+
+
+    # 1.기본 색상 감지만 적용 (기준) (녹색공)
     ball_detector = BallDetector(GREEN_LOWER, GREEN_UPPER)
 
-        # 대시보드 초기화 및 시작
+    # 2.움직임 감지 추가
+    #ball_detector = BallDetector(GREEN_LOWER, GREEN_UPPER, use_motion=True)
+    
+    # # 3. 다중 프레임 일관성 검사 추가
+    #ball_detector = BallDetector(GREEN_LOWER, GREEN_UPPER, use_motion=True, use_consistency=True)
+
+    ######################################################################################3
+    ######################################################################################3
+    ######################################################################################3
+
+
+    # 대시보드 초기화 및 시작
     dashboard = Dashboard()
     dashboard_thread = dashboard.run_server()
+
+    # BBS 전광판 추가
+    scoreboard = BaseballScoreboard(
+        width=0.3, height=0.24, offset_x=-0.4, offset_y=0.0, offset_z=0.1
+        )
     
     # 초기 대시보드 데이터 설정
     # 빈 데이터라도 설정하면 그래프 레이아웃이 초기화됨
@@ -219,7 +247,8 @@ def main():
         
         # 손 감지
         results = hand_detector.find_hands(frame)
-        
+        ar_started = True
+
         # 손 펴면 AR 시작
         if not ar_started:
             if hand_detector.is_hand_open():
@@ -267,6 +296,9 @@ def main():
                     # 그리드 그리기
                     grid_pts2d = pts2d[[0,1,5,4]]  # 앞면 4개 코너만 사용
                     aruco_detector.draw_grid(overlay_frame, grid_pts2d, 3)
+
+                    # 전광판 그리기
+                    scoreboard.draw(overlay_frame, aruco_detector, rvec, tvec)
                     
                     # 공 궤적 기록 시작
                     if not record_trajectory:
@@ -274,11 +306,23 @@ def main():
                         pitch_points_trace_3d_x.clear()
                         pitch_points_trace_3d_y.clear()
                         pitch_points_trace_3d_z.clear()
+
+                        # 새 투구 감지 시 상태 변수 초기화
+                        zone_step1 = False
+                        zone_step2 = False
+                        prev_distance_to_plane1 = None
+                        prev_distance_to_plane2 = None
                     
                     # 공 검출 (녹색)
                     center, radius, _ = ball_detector.detect(analysis_frame)
                     
-                    if center and radius > 0.5:
+                    debug_info = {}
+                    # debug_info 활용 예시
+                    if debug_info:
+                        for name, img in debug_info.items():
+                            cv2.imshow(f"Debug: {name}", img)
+
+                    if center and radius > 0.4:
                         # 공 표시
                         ball_detector.draw_ball(overlay_frame, center, radius)
                         
@@ -418,54 +462,171 @@ def main():
                         distance_to_plane2 = aruco_detector.signed_distance_to_plane(filtered_point, p2_0, p2_1, p2_2)
                         is_in_polygon2 = aruco_detector.is_point_in_polygon(center, projected_points2)
                         
-                        # 1단계 판정
-                        if -0.1 <= distance_to_plane1 <= 0.0 and is_in_polygon1:
-                            zone_step1 = True
-                            # 공이 ball_zone_corners 평면을 지나갈 때 반투명 효과 추가
-                            overlay = overlay_frame.copy()
-                            # 다각형 내부를 반투명한 색상으로 채우기
-                            cv2.fillPoly(overlay, [projected_points], (200, 200, 0, 128))
-                            # 반투명 효과 적용 (알파 블렌딩)
-                            alpha = 0.5  # 투명도 (0: 완전 투명, 1: 완전 불투명)
-                            cv2.addWeighted(overlay, alpha, overlay_frame, 1 - alpha, 0, overlay_frame)
-                            
+                        pass_threshold = 0.25
                         
-                        # 2단계 판정
-                        if zone_step1:
-                            if distance_to_plane2 <= 0.00 and is_in_polygon2:
-                                zone_step2 = True
-                                # 공이 ball_zone_corners2 평면을 지나갈 때 반투명 효과 추가
-                                overlay = overlay_frame.copy()
-                                # 다각형 내부를 반투명한 색상으로 채우기
-                                cv2.fillPoly(overlay, [projected_points2], (0, 100, 255, 128))
-                                # 반투명 효과 적용 (알파 블렌딩)
-                                alpha = 0.5  # 투명도 (0: 완전 투명, 1: 완전 불투명)
-                                cv2.addWeighted(overlay, alpha, overlay_frame, 1 - alpha, 0, overlay_frame)
-                                
-                                # 스트라이크 판정 (일정 시간 간격)
+                        # --- 판정 로직 (이전 프레임 정보가 있을 때만 실행) ---
+                        if prev_distance_to_plane1 is not None and prev_distance_to_plane2 is not None:
+                            # 1단계: plane1 통과 감지
+                            print(f"distance_to_plane1: {distance_to_plane1:.4f}, In polygon1: {is_in_polygon1}")
+                            #print(f"distance_to_plane2: {distance_to_plane2:.4f}, In polygon2: {is_in_polygon2}")
+                            if not zone_step1 and prev_distance_to_plane1 > pass_threshold and distance_to_plane1 <= pass_threshold and is_in_polygon1:
+                                zone_step1 = True
+                                print("1단계 통과")
                                 current_time = time.time()
-                                if current_time - last_time > 1.0:
-                                    strike_count += 1
+                                
+                                # 통과 시각 효과 등 처리
+                                try:
+                                    overlay = overlay_frame.copy()
+                                    cv2.fillPoly(overlay, [projected_points], (200, 200, 0, 128)) # projected_points 필요
+                                    alpha = 0.5
+                                    cv2.addWeighted(overlay, alpha, overlay_frame, 1 - alpha, 0, overlay_frame)
+                                except Exception as e:
+                                    print(f"Overlay effect error: {e}")
+                                
+                            
+                            # 2단계 판정
+                            if zone_step1 and not zone_step2 and prev_distance_to_plane2 > pass_threshold and distance_to_plane2 <= pass_threshold and is_in_polygon2:
+                                    print("****** Plane 2 Passed - STRIKE! ******")
+
+
+                                    # main.py에 추가
+                                    print(f"Distance to plane1: {distance_to_plane1:.4f}, In polygon1: {is_in_polygon1}")
+                                    print(f"Distance to plane2: {distance_to_plane2:.4f}, In polygon2: {is_in_polygon2}")
+                                    print(f"Ball radius: {radius:.2f}px, Estimated Z: {estimated_Z:.4f}m")
+                                    # 스트라이크 판정 (일정 시간 간격)
+                                    current_time = time.time()
+
+                                    if current_time - last_time > 2.0:
+                                        strike_count += 1
+                                        last_time = current_time
+                                        
+                                        #전광판에 스트라이크 추가
+                                        out_added = scoreboard.add_strike()
+
+
+                                        zone_step2 = True
+                                        
+                                        print(f"스트라이크 카운트: {scoreboard.strike_count}")
+                                        # 공이 ball_zone_corners2 평면을 지나갈 때 반투명 효과 추가
+                                        overlay = overlay_frame.copy()
+                                        # 다각형 내부를 반투명한 색상으로 채우기
+                                        cv2.fillPoly(overlay, [projected_points2], (0, 100, 255, 128))
+                                        # 반투명 효과 적용 (알파 블렌딩)
+                                        alpha = 0.5  # 투명도 (0: 완전 투명, 1: 완전 불투명)
+                                        cv2.addWeighted(overlay, alpha, overlay_frame, 1 - alpha, 0, overlay_frame)
+                                        # 스트라이크 정보 저장
+                                        detected_strike_points.append({
+                                            '3d_coord': filtered_point,
+                                            'rvec': rvec.copy(),
+                                            'tvec': tvec.copy()
+                                        })
+                                        
+                                        # 투구 속도 저장
+                                        # 현재 계산된 속도 사용 (필터링된 속도)
+                                        if current_velocity_kmh > 0:
+                                            final_velocity = current_velocity_kmh
+                                        elif len(velocity_buffer) > 0:
+                                            # 버퍼에 있는 속도 중 최대값 사용 (투구 순간의 최고 속도)
+                                            final_velocity = max(velocity_buffer)
+                                        
+                                        pitch_results.append("스트라이크")
+                                        pitch_speeds.append(final_velocity)
+                                        
+                                        # 화면에 표시할 속도 업데이트
+                                        display_velocity = final_velocity
+                                        
+                                        # 투구 기록 추가
+                                        pitch_history.append({
+                                            'number': len(pitch_history) + 1,
+                                            'result': "스트라이크",
+                                            'speed': f"{final_velocity:.1f}"
+                                        })
+                                        
+                                        # 효과 및 결과 설정
+                                        text_effect.add_strike_effect()
+                                        result = "strike"
+                                        
+                                    
+                                        # 스트라이크 로깅
+                                        logging.info(f"""
+                                        === Strike #{len(detected_strike_points)} ===
+                                        Coordinates (Marker Frame):
+                                            X: {filtered_point[0]:.6f} m
+                                            Y: {filtered_point[1]:.6f} m
+                                            Z: {filtered_point[2]:.6f} m
+                                        Raw Camera Coordinates:
+                                            X: {center[0]:.2f} px
+                                            Y: {center[1]:.2f} px
+                                        Estimated Depth: {estimated_Z:.6f} m
+                                        Ball Radius: {radius:.2f} px
+                                        """.strip())
+                                        
+                                        # 대시보드 데이터 업데이트
+                                        record_sheet_x.append(filtered_point[0])
+                                        record_sheet_y.append(filtered_point[2])
+                                        
+                                        pitch_points_3d_x.append(filtered_point[0])
+                                        pitch_points_3d_y.append(ZONE_Z_DIFF)
+                                        pitch_points_3d_z.append(filtered_point[2])
+                                        
+                                        # 궤적 기록 중단
+                                        record_trajectory = False
+                                        
+                                        show_trajectory = True
+                                        trajectory_display_start_time = time.time()
+                                        
+                                        # 스트라이크가 결정되면 즉시 대시보드 데이터 업데이트
+                                        current_dashboard_data = {
+                                            'record_sheet_points': list(zip(record_sheet_x, record_sheet_y)),
+                                            'record_sheet_polygon': [[p[0], p[2]] for p in ball_zone_corners2],
+                                            'trajectory_3d': list(zip(pitch_points_trace_3d_x, pitch_points_trace_3d_y, pitch_points_trace_3d_z)),
+                                            'strike_zone_corners_3d': ball_zone_corners.tolist(),
+                                            'ball_zone_corners_3d': ball_zone_corners.tolist(),
+                                            'ball_zone_corners2_3d': ball_zone_corners2.tolist(),
+                                            'box_corners_3d': box_corners_3d.tolist(),
+                                            'pitch_count': len(detected_strike_points) + len(detected_ball_points),
+                                            'strike_count': len(detected_strike_points),
+                                            'ball_count': len(detected_ball_points),
+                                            'pitch_speeds': pitch_speeds,
+                                            'pitch_results': pitch_results,
+                                            'pitch_history': pitch_history
+                                        }
+                                        print(f"스트라이크 판정 후 대시보드 데이터 업데이트: pitch_count={len(detected_strike_points) + len(detected_ball_points)}")
+                                        dashboard.update_data(current_dashboard_data)
+                                        
+
+                                        # 플래그 초기화
+                                        zone_step1 = False
+                                        zone_step2 = False
+                                        prev_distance_to_plane1 = None
+                                        prev_distance_to_plane2 = None
+                                        
+                            
+                            # 볼 판정
+                            if distance_to_plane2 <= 0.0 and not is_in_polygon2:
+                                current_time = time.time()
+                                if current_time - last_time > 2.0:
                                     last_time = current_time
+                                    result = "ball"
+                                    text_effect.add_ball_effect()
+
+                                    #전광판에 볼 추가
+                                    walk_issue = scoreboard.add_ball()
                                     
-                                    print(f"스트라이크 카운트: {strike_count}")
+                                    ball_count += 1
+                                    print(f"볼 카운트: {ball_count}")
                                     
-                                    # 스트라이크 정보 저장
-                                    detected_strike_points.append({
+                                    # 볼 정보 저장
+                                    detected_ball_points.append({
                                         '3d_coord': filtered_point,
                                         'rvec': rvec.copy(),
                                         'tvec': tvec.copy()
                                     })
                                     
-                                    # 투구 속도 저장
-                                    # 현재 계산된 속도 사용 (필터링된 속도)
-                                    if current_velocity_kmh > 0:
-                                        final_velocity = current_velocity_kmh
-                                    elif len(velocity_buffer) > 0:
-                                        # 버퍼에 있는 속도 중 최대값 사용 (투구 순간의 최고 속도)
-                                        final_velocity = max(velocity_buffer)
+                                    # 투구 속도 저장 (실제 측정이 어려우므로 임의의 값 사용)
+                                    final_velocity = 20.0 + np.random.normal(0, 5)
                                     
-                                    pitch_results.append("스트라이크")
+                                    pitch_results.append("볼")
                                     pitch_speeds.append(final_velocity)
                                     
                                     # 화면에 표시할 속도 업데이트
@@ -474,47 +635,18 @@ def main():
                                     # 투구 기록 추가
                                     pitch_history.append({
                                         'number': len(pitch_history) + 1,
-                                        'result': "스트라이크",
+                                        'result': "볼",
                                         'speed': f"{final_velocity:.1f}"
                                     })
                                     
-                                    # 효과 및 결과 설정
-                                    text_effect.add_strike_effect()
-                                    result = "strike"
-                                    
-                                   
-                                    # 스트라이크 로깅
-                                    logging.info(f"""
-                                    === Strike #{len(detected_strike_points)} ===
-                                    Coordinates (Marker Frame):
-                                        X: {filtered_point[0]:.6f} m
-                                        Y: {filtered_point[1]:.6f} m
-                                        Z: {filtered_point[2]:.6f} m
-                                    Raw Camera Coordinates:
-                                        X: {center[0]:.2f} px
-                                        Y: {center[1]:.2f} px
-                                    Estimated Depth: {estimated_Z:.6f} m
-                                    Ball Radius: {radius:.2f} px
-                                    """.strip())
-                                    
-                                    # 대시보드 데이터 업데이트
+                                    # 볼도 기록지에 추가
                                     record_sheet_x.append(filtered_point[0])
                                     record_sheet_y.append(filtered_point[2])
                                     
-                                    pitch_points_3d_x.append(filtered_point[0])
-                                    pitch_points_3d_y.append(ZONE_Z_DIFF)
-                                    pitch_points_3d_z.append(filtered_point[2])
-                                    
-                                    # 궤적 기록 중단
-                                    record_trajectory = False
-                                    
-                                    show_trajectory = True
-                                    trajectory_display_start_time = time.time()
-                                    
-                                    # 스트라이크가 결정되면 즉시 대시보드 데이터 업데이트
+                                    # 볼이 결정되면 즉시 대시보드 데이터 업데이트
                                     current_dashboard_data = {
                                         'record_sheet_points': list(zip(record_sheet_x, record_sheet_y)),
-                                        'record_sheet_polygon': [[p[0], p[2]] for p in ball_zone_corners2],
+                                        'record_sheet_polygon': [[p[0], p[2]] for p in ball_zone_corners2] if ids is not None else [],
                                         'trajectory_3d': list(zip(pitch_points_trace_3d_x, pitch_points_trace_3d_y, pitch_points_trace_3d_z)),
                                         'strike_zone_corners_3d': ball_zone_corners.tolist(),
                                         'ball_zone_corners_3d': ball_zone_corners.tolist(),
@@ -527,76 +659,28 @@ def main():
                                         'pitch_results': pitch_results,
                                         'pitch_history': pitch_history
                                     }
-                                    print(f"스트라이크 판정 후 대시보드 데이터 업데이트: pitch_count={len(detected_strike_points) + len(detected_ball_points)}")
+                                    print(f"볼 판정 후 대시보드 데이터 업데이트: pitch_count={len(detected_strike_points) + len(detected_ball_points)}")
                                     dashboard.update_data(current_dashboard_data)
                                     
+                                    # 궤적 기록 중단
+                                    record_trajectory = False
+                                    show_trajectory = True
+                                    trajectory_display_start_time = time.time()
 
-                                    # 플래그 초기화
+                                    # 볼 판정 후에도 상태 초기화
                                     zone_step1 = False
                                     zone_step2 = False
-                                    
+                                    prev_distance_to_plane1 = None
+                                    prev_distance_to_plane2 = None
                         
-                        # 볼 판정
-                        if -0.1 <= distance_to_plane2 <= 0.0 and not is_in_polygon2:
-                            current_time = time.time()
-                            if current_time - last_time > 2.0:
-                                last_time = current_time
-                                result = "ball"
-                                text_effect.add_ball_effect()
-                                
-                                ball_count += 1
-                                print(f"볼 카운트: {ball_count}")
-                                
-                                # 볼 정보 저장
-                                detected_ball_points.append({
-                                    '3d_coord': filtered_point,
-                                    'rvec': rvec.copy(),
-                                    'tvec': tvec.copy()
-                                })
-                                
-                                # 투구 속도 저장 (실제 측정이 어려우므로 임의의 값 사용)
-                                final_velocity = 20.0 + np.random.normal(0, 5)
-                                
-                                pitch_results.append("볼")
-                                pitch_speeds.append(final_velocity)
-                                
-                                # 화면에 표시할 속도 업데이트
-                                display_velocity = final_velocity
-                                
-                                # 투구 기록 추가
-                                pitch_history.append({
-                                    'number': len(pitch_history) + 1,
-                                    'result': "볼",
-                                    'speed': f"{final_velocity:.1f}"
-                                })
-                                
-                                # 볼도 기록지에 추가
-                                record_sheet_x.append(filtered_point[0])
-                                record_sheet_y.append(filtered_point[2])
-                                
-                                # 볼이 결정되면 즉시 대시보드 데이터 업데이트
-                                current_dashboard_data = {
-                                    'record_sheet_points': list(zip(record_sheet_x, record_sheet_y)),
-                                    'record_sheet_polygon': [[p[0], p[2]] for p in ball_zone_corners2] if ids is not None else [],
-                                    'trajectory_3d': list(zip(pitch_points_trace_3d_x, pitch_points_trace_3d_y, pitch_points_trace_3d_z)),
-                                    'strike_zone_corners_3d': ball_zone_corners.tolist(),
-                                    'ball_zone_corners_3d': ball_zone_corners.tolist(),
-                                    'ball_zone_corners2_3d': ball_zone_corners2.tolist(),
-                                    'box_corners_3d': box_corners_3d.tolist(),
-                                    'pitch_count': len(detected_strike_points) + len(detected_ball_points),
-                                    'strike_count': len(detected_strike_points),
-                                    'ball_count': len(detected_ball_points),
-                                    'pitch_speeds': pitch_speeds,
-                                    'pitch_results': pitch_results,
-                                    'pitch_history': pitch_history
-                                }
-                                print(f"볼 판정 후 대시보드 데이터 업데이트: pitch_count={len(detected_strike_points) + len(detected_ball_points)}")
-                                dashboard.update_data(current_dashboard_data)
-                                
-                                # 궤적 기록 중단
-                                record_trajectory = False
-                                show_trajectory = True
-                                trajectory_display_start_time = time.time()
+                        # 이전 거리 값 업데이트
+                        # 이전 거리 값이 None이 아닐 때만 업데이트
+                        # (첫 번째 프레임에서는 None이므로 업데이트하지 않음)
+                        # 이전 거리 값이 None인 경우, 현재 거리 값을 저장
+                        
+                        prev_distance_to_plane1 = distance_to_plane1
+                        prev_distance_to_plane2 = distance_to_plane2
+
                         
                         # 판정 이벤트 발생 시에만 궤적을 화면에 그리기
                         if show_trajectory:
@@ -605,6 +689,19 @@ def main():
                             if time.time() - trajectory_display_start_time >= 2.0:
                                 show_trajectory = False
                                 ball_detector.pts.clear()  # 궤적 기록 초기화        
+
+                # 마커가 감지되지 않았을 때 처리
+            else:
+                # 마커가 안 보이면 관련 상태 초기화
+                record_trajectory = False
+                # 이전 거리 값도 리셋하여 다음 감지 시 잘못된 비교 방지
+                prev_distance_to_plane1 = None
+                prev_distance_to_plane2 = None
+                zone_step1 = False
+                zone_step2 = False
+ 
+
+            
                               
                 
         # 평면 좌표 정의
@@ -679,14 +776,16 @@ def main():
             ball_count = 0
         
         # 스코어 표시
-        cv2.putText(overlay_frame, f"S {strike_count}", (10, 60),
-                    cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 200, 200), 2)
-        cv2.putText(overlay_frame, f"B {ball_count}", (10, 110),
-                    cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 255, 0), 2)
-        cv2.putText(overlay_frame, f"O {out_count}", (10, 160),
-                    cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 255), 2)
-        cv2.putText(overlay_frame, f"speed: {display_velocity:.1f} km/h",
-                    (10, 210), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 255), 2)
+        # cv2.putText(overlay_frame, f"S {strike_count}", (10, 60),
+        #             cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 200, 200), 2)
+        # cv2.putText(overlay_frame, f"B {ball_count}", (10, 110),
+        #             cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 255, 0), 2)
+        # cv2.putText(overlay_frame, f"O {out_count}", (10, 160),
+        #             cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 255), 2)
+        # cv2.putText(overlay_frame, f"speed: {display_velocity:.1f} km/h",
+        #             (10, 210), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 255), 2)
+        
+        
         # 텍스트 효과 그리기
         text_effect.draw(overlay_frame, result)
         
@@ -722,6 +821,8 @@ def main():
             strike_count = 0
             out_count = 0
             ball_count = 0
+            scoreboard.reset()
+            
         elif key & 0xFF == ord('s'):
             cv2.imwrite("strike_zone.png", overlay_frame)
             print("스트라이크 존 이미지가 저장되었습니다.")

@@ -30,8 +30,8 @@ class KalmanTracker:
         ], dtype=np.float32)
 
         # 공정 잡음, 측정 잡음
-        kf.processNoiseCov = np.eye(6, dtype=np.float32) * 0.01
-        kf.measurementNoiseCov = np.eye(3, dtype=np.float32) * 0.1
+        kf.processNoiseCov = np.eye(6, dtype=np.float32) * 0.005
+        kf.measurementNoiseCov = np.eye(3, dtype=np.float32) * 0.5
         
         # 초기 오차 공분산
         kf.errorCovPost = np.eye(6, dtype=np.float32)
@@ -92,31 +92,72 @@ class BallDetector:
         self.lower_color = lower_color
         self.upper_color = upper_color
         self.pts = deque(maxlen=64)  # 궤적 저장용
+        self.pts_3d = deque(maxlen=64)  # 3D 궤적 저장용
+        self.prev_frame = None  # 이전 프레임 저장용
     
     def detect(self, frame):
         """프레임에서 볼 감지"""
         blurred = cv2.GaussianBlur(frame, (11, 11), 0)
         hsv = cv2.cvtColor(blurred, cv2.COLOR_BGR2HSV)
         mask = cv2.inRange(hsv, self.lower_color, self.upper_color)
-        mask = cv2.erode(mask, None, iterations=2)
-        mask = cv2.dilate(mask, None, iterations=2)
+        #mask = self._apply_motion_detection(frame, mask)
+        kernel = np.ones((5, 5), np.uint8)  # 커널 크기 조정
+        mask = cv2.erode(mask, kernel, iterations=1)  # 반복 횟수 줄이기
+        mask = cv2.dilate(mask, kernel, iterations=3) # 공 형태 보존
 
         cnts = cv2.findContours(mask.copy(), cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
         cnts = imutils.grab_contours(cnts)
         center = None
         radius = 0
+        
 
         if len(cnts) > 0:
             c = max(cnts, key=cv2.contourArea)
             ((x, y), radius) = cv2.minEnclosingCircle(c)
-            M = cv2.moments(c)
-            
-            if M["m00"] > 0:
-                center = (int(M["m10"] / M["m00"]), int(M["m01"] / M["m00"]))
+            area = cv2.contourArea(c)
+            perimeter = cv2.arcLength(c, True) # 둘레 길이
+            circularity = 4 * np.pi* area / (perimeter * perimeter) if perimeter > 0 else 0
+
+            if 50 < area < 5000 and circularity > 0.6:
+                M = cv2.moments(c)
+                # 모멘트를 사용하여 더 정확한 중삼 계산
+                if M["m00"] > 0:
+                    center = (int(M["m10"] / M["m00"]), int(M["m01"] / M["m00"]))
+                else:
+                    center = (int(x), int(y))
             else:
-                center = (int(x), int(y))
+                center = None
+                radius = 0
 
         return center, radius, mask
+    
+    def _apply_motion_detection(self, frame, color_mask):
+        """움직임 감지 적용"""
+        curr_gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+        
+        if self.prev_frame is None:
+            self.prev_frame = curr_gray
+            return color_mask
+        
+        # 이전 프레임과 차이 계산
+        diff = cv2.absdiff(self.prev_frame, curr_gray)
+        _, motion_mask = cv2.threshold(diff, 7, 255, cv2.THRESH_BINARY)
+
+         # 노이즈 제거 후 팽창 연산 늘리기
+        motion_mask = cv2.medianBlur(motion_mask, 3)  # 노이즈 제거 추가
+        motion_mask = cv2.dilate(motion_mask, None, iterations=3)
+        
+        # 현재 프레임 저장
+        self.prev_frame = curr_gray
+
+        
+        # OR 연산으로 변경 - 조건을 더 관대하게
+        combined_mask = cv2.bitwise_or(color_mask, motion_mask)
+        # 모폴로지 연산으로 노이즈 제거
+        kernel = np.ones((3,3), np.uint8)
+        combined_mask = cv2.morphologyEx(combined_mask, cv2.MORPH_OPEN, kernel)
+        
+        return combined_mask
 
     def draw_ball(self, frame, center, radius):
         """공 시각화"""
@@ -126,14 +167,16 @@ class BallDetector:
             return True
         return False
             
-    def track_trajectory(self, center):
+    def track_trajectory(self, center, point_3d = None):
         """궤적 추적"""
         self.pts.appendleft(center)
+        if point_3d is not None:
+            self.pts_3d.appendleft(point_3d)
         
     def draw_trajectory(self, frame, color=(255, 255, 255)):
         """궤적 그리기"""
         for i in range(1, len(self.pts)):
-            print(self.pts[i - 1], self.pts[i])
+            #print(self.pts[i - 1], self.pts[i])
             pt1 = tuple(map(int, self.pts[i - 1]))
             pt2 = tuple(map(int, self.pts[i]))
             
