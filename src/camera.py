@@ -130,7 +130,15 @@ class CameraManager:
             print("카메라가 선택되지 않았습니다")
             return False
         
+        # Scrcpy 전용 INDEX
+        # self.capture = cv2.VideoCapture(5, cv2.CAP_DSHOW)
+        
         self.capture = cv2.VideoCapture(camera_index, cv2.CAP_MSMF)
+        self.capture.set(cv2.CAP_PROP_FPS, 90)
+        fps = self.capture.get(cv2.CAP_PROP_FPS)
+        print(f"FPS 설정: {fps}")
+        self.capture.set(cv2.CAP_PROP_POS_FRAMES, 0)
+
         if not self.capture.isOpened():
             print(f"카메라 {camera_index} 열기 실패")
             return False

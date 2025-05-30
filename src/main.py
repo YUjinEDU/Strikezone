@@ -20,6 +20,7 @@ from baseball_scoreboard import BaseballScoreboard
 
 def main():
     # 전역 종료 이벤트
+    global key, rvec
     shutdown_event = threading.Event()
     
     # 로그 설정
@@ -42,11 +43,12 @@ def main():
     prev_distance_to_plane1 = None # 이전 프레임 거리 (초기값 None)
     prev_distance_to_plane2 = None
     
-    # 통과 임계값 (0 또는 약간의 음수값으로 노이즈 제거)
+    # 통과 임계값 (0 또는 약간의 음수 값으로 노이즈 제거)
     pass_threshold = 0.0
 
     frame_count = 0
     last_time = 0.0
+
     
     # 궤적 관련 플래그와 타이머 변수 추가
     show_trajectory = False
@@ -56,6 +58,11 @@ def main():
     strike_count = 0
     ball_count = 0
     out_count = 0
+
+    # FPS 계산용 변수 초기화
+    fps_start_time = time.time()
+    last_fps_update_time = time.time()
+    display_fps_value = 0
     
     # 궤적 데이터
     detected_strike_points = []
@@ -226,7 +233,7 @@ def main():
             except cv2.error:
                 pass
                 
-            if key & 0xFF == ord(' '):
+            if  key & 0xFF == ord(' '):
                 play_pause = False
                 print("재생 재개")
             elif key & 0xFF == ord('q'):
@@ -235,7 +242,7 @@ def main():
             continue
         
         # 프레임 읽기
-        fps_start_time = time.time()
+        loop_start_time = time.time()
         ret, frame = cap.read()
         if not ret:
             print("프레임을 읽을 수 없습니다.")
@@ -468,8 +475,9 @@ def main():
                         if prev_distance_to_plane1 is not None and prev_distance_to_plane2 is not None:
                             # 1단계: plane1 통과 감지
                             print(f"distance_to_plane1: {distance_to_plane1:.4f}, In polygon1: {is_in_polygon1}")
-                            #print(f"distance_to_plane2: {distance_to_plane2:.4f}, In polygon2: {is_in_polygon2}")
-                            if not zone_step1 and prev_distance_to_plane1 > pass_threshold and distance_to_plane1 <= pass_threshold and is_in_polygon1:
+                            # print(f"distance_to_plane2: {distance_to_plane2:.4f}, In polygon2: {is_in_polygon2}")
+                            
+                            if not zone_step1 and prev_distance_to_plane1 > pass_threshold >= distance_to_plane1 and is_in_polygon1:
                                 zone_step1 = True
                                 print("1단계 통과")
                                 current_time = time.time()
@@ -485,7 +493,7 @@ def main():
                                 
                             
                             # 2단계 판정
-                            if zone_step1 and not zone_step2 and prev_distance_to_plane2 > pass_threshold and distance_to_plane2 <= pass_threshold and is_in_polygon2:
+                            if zone_step1 and not zone_step2 and prev_distance_to_plane2 > pass_threshold >= distance_to_plane2 and is_in_polygon2:
                                     print("****** Plane 2 Passed - STRIKE! ******")
 
 
@@ -601,11 +609,21 @@ def main():
                                         prev_distance_to_plane1 = None
                                         prev_distance_to_plane2 = None
                                         
-                            
+                            REASONABLE_MIN_DISTANCE = -0.5 # 예시: -0.5m 보다 더 뒤는 오류로 간주
+                            if distance_to_plane2 < REASONABLE_MIN_DISTANCE:
+                                print(f"Warning: Unlikely distance_to_plane2 ({distance_to_plane2:.2f}), skipping judgment.")
+                                zone_step1 = False
+                                zone_step2 = False
+                                prev_distance_to_plane1 = None
+                                prev_distance_to_plane2 = None
+                                
                             # 볼 판정
-                            if distance_to_plane2 <= 0.0 and not is_in_polygon2:
+                            elif  distance_to_plane2 <= pass_threshold and not is_in_polygon2:
                                 current_time = time.time()
                                 if current_time - last_time > 2.0:
+                                    
+                                    print("****** BALL (Passed P1, Missed P2 Zone) ******")
+
                                     last_time = current_time
                                     result = "ball"
                                     text_effect.add_ball_effect()
@@ -775,25 +793,28 @@ def main():
         if ball_count >= 5:
             ball_count = 0
         
-        # 스코어 표시
-        # cv2.putText(overlay_frame, f"S {strike_count}", (10, 60),
-        #             cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 200, 200), 2)
-        # cv2.putText(overlay_frame, f"B {ball_count}", (10, 110),
-        #             cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 255, 0), 2)
-        # cv2.putText(overlay_frame, f"O {out_count}", (10, 160),
-        #             cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 255), 2)
-        # cv2.putText(overlay_frame, f"speed: {display_velocity:.1f} km/h",
-        #             (10, 210), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 255), 2)
-        
-        
         # 텍스트 효과 그리기
         text_effect.draw(overlay_frame, result)
         
-        # FPS 계산
-        fps_end_time = time.time()
-        fps = 1.0 / (fps_end_time - fps_start_time + 1e-8)
-        cv2.putText(overlay_frame, f"FPS: {int(fps)}", (10, 30),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 2)
+        # FPS 계산 및 표시
+        now = time.time()
+        delta_time = now - fps_start_time
+        if delta_time > 0:
+            capture_fps = 1.0 / delta_time
+
+        # 0.5초마다 화면에 표시될 FPS 값 업데이트
+        if now - last_fps_update_time >= 0.5:
+            display_fps_value = capture_fps # 현재 계산된 FPS로 업데이트
+            last_fps_update_time = now
+
+        fps_start_time = now # 다음 프레임 계산을 위해 시작 시간 업데이트
+
+        # 계산된 FPS 값 표시 (0.5초마다 업데이트된 값)
+        cv2.putText(overlay_frame, f"FPS: {display_fps_value:.1f}", (10, 30),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
+        # 원본 프레임에도 동일하게 표시 (선택 사항)
+        cv2.putText(frame, f"FPS: {display_fps_value:.1f}", (10, 30),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
         
         # 프레임 표시
         cv2.imshow('ARUCO Tracker with Strike Zone', overlay_frame)

@@ -113,3 +113,9 @@ RECORD_SHEET_HEIGHT = 0.5
 # 색상 설정
 BALL_COLOR = (204, 204, 0)
 STRIKE_COLOR = (0, 200, 200)
+
+
+# main.py의 판정 및 표시에 사용될 수 있는 상수
+PITCH_EVENT_COOLDOWN = 2.0  # 스트라이크/볼 판정 후 다음 판정까지 최소 시간 (초)
+TRAJECTORY_DISPLAY_DURATION = 2.0  # 판정 후 궤적 표시 시간 (초)
+FPS_UPDATE_INTERVAL = 0.5  # 화면 FPS 표시 업데이트 간격 (초)

@@ -1,6 +1,6 @@
 # AR 스트라이크 존 프로젝트
 
-## 프로젝트 개요
+##### 프로젝트 개요
 
 본 프로젝트는 증강현실(AR) 기술을 활용하여 실시간으로 스트라이크 존을 시각화하고 투구 분석을 수행하는 시스템입니다. 카메라를 통해 공의 궤적을 추적하고, 스트라이크/볼 판정을 자동화하며, 투구 데이터를 실시간으로 분석하여 사용자에게 피드백을 제공합니다.
 
@@ -48,10 +48,10 @@ if center and radius > 0.5:
         (center[1] - camera_matrix[1,2]) * estimated_Z / camera_matrix[1,1],
         estimated_Z
     ])
-    
+  
     # 카메라 → 마커 좌표계 변환
     point_in_marker_coord = aruco_detector.point_to_marker_coord(ball_3d_cam, rvec, tvec)
-    
+  
     # 칼만 필터 적용
     filtered_point = kalman_tracker.update_with_gating(np.array(point_in_marker_coord, dtype=np.float32))
 ```
@@ -68,14 +68,14 @@ if len(ball_positions_history) >= 3:
     first_pos = ball_positions_history[0]
     last_pos = ball_positions_history[-1]
     time_diff = ball_times_history[-1] - ball_times_history[0]
-    
+  
     if time_diff > 0:
         # 3D 거리 계산
         distance = np.linalg.norm(last_pos - first_pos)
-        
+      
         # 속도 계산 (m/s)
         velocity = distance / time_diff
-        
+      
         # 이상치 필터링
         if 5 < velocity < 50:  # 18km/h ~ 180km/h 범위
             velocity_kmh = velocity * 3.6
@@ -188,6 +188,7 @@ dashboard.update_data(dashboard_data)
 **도전**: 2D 이미지에서 3D 공간으로의 정확한 좌표 변환
 
 **해결 방법**:
+
 - 카메라 캘리브레이션을 통한 내부 파라미터 정확도 향상
 - ArUco 마커를 기준으로 한 안정적인 좌표계 설정
 - 공의 크기를 이용한 깊이 추정 알고리즘 개선
@@ -197,6 +198,7 @@ dashboard.update_data(dashboard_data)
 **도전**: 빠르게 움직이는 공의 안정적인 추적
 
 **해결 방법**:
+
 - HSV 색 공간에서의 컬러 기반 객체 검출 최적화
 - 칼만 필터를 통한 노이즈 제거 및 궤적 안정화
 - 게이팅 기법을 적용한 이상치 필터링
@@ -206,6 +208,7 @@ dashboard.update_data(dashboard_data)
 **도전**: 제한된 프레임 레이트에서의 정확한 구속 측정
 
 **해결 방법**:
+
 - 다중 측정점을 이용한 속도 계산
 - 이상치 필터링 및 평균화 기법 적용
 - 물리적으로 가능한 속도 범위 설정 (5~50 m/s)
@@ -215,6 +218,7 @@ dashboard.update_data(dashboard_data)
 **도전**: 영상 처리, 3D 변환, 대시보드 업데이트의 실시간 처리
 
 **해결 방법**:
+
 - 멀티스레딩을 통한 병렬 처리
 - 프레임 스킵을 통한 처리 부하 조절
 - 대시보드 업데이트 주기 최적화
