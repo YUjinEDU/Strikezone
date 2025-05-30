@@ -352,7 +352,7 @@ def main():
                         )[0]
 
                         # 2D 궤적 기록 (projected_pt는 이미지 좌표)
-                        ball_detector.track_trajectory((projected_pt[0], projected_pt[1]))
+                        # ball_detector.track_trajectory((projected_pt[0], projected_pt[1]))
 
 
                         
@@ -701,12 +701,52 @@ def main():
 
                         
                         # 판정 이벤트 발생 시에만 궤적을 화면에 그리기
-                        if show_trajectory:
-                            ball_detector.draw_trajectory(overlay_frame)
-                            # 2초 경과 후 궤적 시각화 종료 및 기록 초기화
-                            if time.time() - trajectory_display_start_time >= 2.0:
-                                show_trajectory = False
-                                ball_detector.pts.clear()  # 궤적 기록 초기화        
+                        # if show_trajectory:
+                        #     ball_detector.draw_trajectory(overlay_frame)
+                        #     # 2초 경과 후 궤적 시각화 종료 및 기록 초기화
+                        #     if time.time() - trajectory_display_start_time >= 2.0:
+                        #         show_trajectory = False
+                        #         ball_detector.pts.clear()  # 궤적 기록 초기화   
+                    
+                    if show_trajectory and len(pitch_points_trace_3d_x) > 1:
+
+                        trajectory_3d_points_marker_coord = np.array(list(zip(
+                            pitch_points_trace_3d_x, 
+                            pitch_points_trace_3d_y,
+                            pitch_points_trace_3d_z
+                        )), dtype=np.float32)
+
+                        if  trajectory_3d_points_marker_coord.ndim ==1:
+                            trajectory_3d_points_marker_coord = trajectory_3d_points_marker_coord.reshape(-1, 3)
+
+                        if trajectory_3d_points_marker_coord.shape[0] > 1:
+                            projected_trajectory_2d_points = aruco_detector.detector.project_points(
+                                trajectory_3d_points_marker_coord, rvec, tvec)
+                            
+                            if projected_trajectory_2d_points is not None:
+                                projected_trajectory_2d_points_int = projected_trajectory_2d_points.resahpe((-1, 2)).astype(np.int32)
+
+                                transparent_overlay = overlay_frame.copy()
+                               
+                                for i in range(1, len(projected_trajectory_2d_points_int)):
+                                    pt1  = tuple(projected_trajectory_2d_points_int[i-1])
+                                    pt2  = tuple(projected_trajectory_2d_points_int[i])
+
+                                    # 궤적의 오래된 부분은 더 얇게 표현 (선택적)
+                                    # thickness = max(1, int(3 * (1.0 - (i / len(projected_trajectory_2d_points_int))) + 1))
+                                    thickness = 2 # 여기서는 고정 두께
+
+                                    cv2.line(transparent_overlay, pt1, pt2, (255, 255, 255), thickness)
+                                alpah = 0.6
+                                cv2.addWeighted(transparent_overlay, alpah, overlay_frame, 1-alpah, 0, overlay_frame)
+                                    # 2초 경과 후 궤적 시각화 종료 및 (필요시) 관련 데이터 초기화
+                    if show_trajectory and trajectory_display_start_time is not None and \
+                    time.time() - trajectory_display_start_time >= 2.0:
+                        show_trajectory = False
+
+
+
+                         
 
                 # 마커가 감지되지 않았을 때 처리
             else:
