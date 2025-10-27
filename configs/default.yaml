@@ -1,0 +1,10 @@
+# Default parameters for the StrikeZone pipeline
+
+dfactor: 0.18
+min_len_px: 20
+max_width_px: 60
+alpha: 2.5
+beta: 2.0
+gamma: 1.2
+frame_rate: 60.0
+ball_diameter_m: 0.074
