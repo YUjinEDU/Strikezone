@@ -3,7 +3,7 @@ import numpy as np
 from datetime import datetime
 
 # 캘리브레이션 파일 경로
-CALIBRATION_PATH = "camera_calib.npz"
+CALIBRATION_PATH = "camera_calib_s22.npz"
 
 # ArUco 마커 설정
 ARUCO_MARKER_SIZE = 0.16
