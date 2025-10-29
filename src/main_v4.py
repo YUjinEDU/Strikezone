@@ -43,8 +43,10 @@ def main():
     prev_distance_to_plane1 = None # 이전 프레임 거리 (초기값 None)
     prev_distance_to_plane2 = None
     
-    # 통과 임계값 (0 또는 약간의 음수 값으로 노이즈 제거)
-    pass_threshold = 0.0
+    # 히스테리시스 임계값 (깊이 추정 오차를 고려한 현실적인 값)
+    # 로그 분석: distance가 0.30~0.45m 범위에 있음
+    THRESHOLD_HIGH = 0.50  # 들어올 때 (관대) - 평면 50cm 앞부터 인정
+    THRESHOLD_LOW = 0.30   # 나갈 때 (엄격) - 평면 30cm 이내로 확실히 벗어났을 때만 초기화
 
     frame_count = 0
     last_time = 0.0
@@ -70,6 +72,9 @@ def main():
     last_fps_update_time = time.time()
     display_fps_value = 0
     
+    # 카메라/영상 FPS 저장 변수
+    source_fps = 0
+    
     # 궤적 데이터
     detected_strike_points = []
     detected_ball_points = []
@@ -86,8 +91,8 @@ def main():
     display_velocity = 0
     final_velocity = 0
     
-    # 손 감지기 초기화
-    hand_detector = HandDetector()
+    # 손 감지기 초기화 (사용 안 함 - 성능 최적화)
+    # hand_detector = HandDetector()
     
     # 텍스트 효과 초기화
     text_effect = TextEffect()
@@ -121,6 +126,10 @@ def main():
         dist_coeffs = camera_manager.dist_coeffs
         cap = camera_manager.capture
         
+        # 카메라 FPS 가져오기
+        source_fps = cap.get(cv2.CAP_PROP_FPS)
+        print(f"카메라 FPS: {source_fps}")
+        
     elif user_input == "2":
         # 비디오 파일 선택
         video_path = "./video/video_BBS.mp4"
@@ -147,6 +156,10 @@ def main():
             print(f"캘리브레이션 데이터를 로드할 수 없습니다: {e}")
             shutdown_event.set()
             return
+        
+        # 비디오 FPS 가져오기
+        source_fps = cap.get(cv2.CAP_PROP_FPS)
+        print(f"비디오 FPS: {source_fps}")
     
     else:
         print("잘못된 입력입니다. 종료합니다.")
@@ -228,6 +241,9 @@ def main():
     # 변수 초기화
     ids = None
     
+    # 현재 공의 3D 좌표 저장 (b 키로 출력용)
+    current_ball_3d_coord = None
+    
     # 메인 루프
     while not shutdown_event.is_set():
         # 비디오 모드에서 일시정지 상태 처리
@@ -258,18 +274,23 @@ def main():
         analysis_frame = frame.copy()
         overlay_frame = frame.copy()
         
-        # 손 감지
-        results = hand_detector.find_hands(frame)
+        # V채널 정규화 (조명 변화 억제)
+        hsv_temp = cv2.cvtColor(analysis_frame, cv2.COLOR_BGR2HSV)
+        hsv_temp[:,:,2] = cv2.equalizeHist(hsv_temp[:,:,2])  # V채널만 정규화
+        analysis_frame = cv2.cvtColor(hsv_temp, cv2.COLOR_HSV2BGR)
+        
+        # 손 감지 (비활성화 - 성능 최적화)
+        # results = hand_detector.find_hands(frame)
         ar_started = True
 
-        # 손 펴면 AR 시작
-        if not ar_started:
-            if hand_detector.is_hand_open():
-                ar_started = True
-                print("AR 시작!")
-            else:
-                cv2.putText(overlay_frame, "Show your hand!", (10, 100),
-                            cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 255), 2)
+        # 손 펴면 AR 시작 (비활성화)
+        # if not ar_started:
+        #     if hand_detector.is_hand_open():
+        #         ar_started = True
+        #         print("AR 시작!")
+        #     else:
+        #         cv2.putText(overlay_frame, "Show your hand!", (10, 100),
+        #                     cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 255), 2)
         
         if ar_started:
             frame_count += 1
@@ -366,6 +387,9 @@ def main():
                         # 카메라 → 마커 좌표계 변환
                         filtered_point = aruco_detector.point_to_marker_coord(filtered_point_kalman, rvec, tvec)
                         
+                        # 현재 공의 3D 좌표 저장 (b 키로 출력용)
+                        current_ball_3d_coord = filtered_point.copy()
+                        
                         if previous_ball_position is None:
                             previous_ball_position = filtered_point
                         
@@ -383,6 +407,7 @@ def main():
                         # 깊이 정보 표시
                         marker_depth_text = f"marker Z: {tvec[0][2]:.2f} m"
                         ball_depth_text = f"ball Z: {estimated_Z:.2f} m"
+                        ball_to_marker_distance = np.linalg.norm(filtered_point)  # 마커 원점에서 공까지 거리
                         
                         marker_position = tuple(map(int, pts2d[0]))
                         cv2.putText(overlay_frame, marker_depth_text,
@@ -392,6 +417,11 @@ def main():
                         cv2.putText(overlay_frame, ball_depth_text,
                                     (center[0]+20, center[1]+30),
                                     cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 2)
+                        
+                        # 디버깅: 마커-공 거리 출력
+                        cv2.putText(overlay_frame, f"Ball-Marker Dist: {ball_to_marker_distance:.2f}m",
+                                    (center[0]+20, center[1]+50),
+                                    cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 0), 2)
                         
                         # 최소 3개 이상의 위치 데이터가 있을 때 속도 계산
                         current_velocity_kmh = 0
@@ -475,17 +505,15 @@ def main():
                         distance_to_plane2 = aruco_detector.signed_distance_to_plane(filtered_point, p2_0, p2_1, p2_2)
                         is_in_polygon2 = aruco_detector.is_point_in_polygon(center, projected_points2)
                         
-                        pass_threshold = 0.25
-                        
                         # --- 판정 로직 (이전 프레임 정보가 있을 때만 실행) ---
                         if prev_distance_to_plane1 is not None and prev_distance_to_plane2 is not None:
-                            # 1단계: plane1 통과 감지
-                            print(f"distance_to_plane1: {distance_to_plane1:.4f}, In polygon1: {is_in_polygon1}")
-                            # print(f"distance_to_plane2: {distance_to_plane2:.4f}, In polygon2: {is_in_polygon2}")
+                            # 1단계: plane1 통과 감지 (히스테리시스 적용)
+                            # print(f"[DEBUG] Plane1: prev={prev_distance_to_plane1:.4f}, curr={distance_to_plane1:.4f}, in_poly={is_in_polygon1}, threshold={THRESHOLD_HIGH:.2f}")
+                            # print(f"[DEBUG] Plane2: prev={prev_distance_to_plane2:.4f}, curr={distance_to_plane2:.4f}, in_poly={is_in_polygon2}")
                             
-                            if not zone_step1 and prev_distance_to_plane1 > pass_threshold >= distance_to_plane1 and is_in_polygon1:
+                            if not zone_step1 and prev_distance_to_plane1 > THRESHOLD_HIGH >= distance_to_plane1 and is_in_polygon1:
                                 zone_step1 = True
-                                print("1단계 통과")
+                                print("✅ 1단계 통과!")
                                 current_time = time.time()
                                 
                                 # 통과 시각 효과 등 처리
@@ -498,8 +526,8 @@ def main():
                                     print(f"Overlay effect error: {e}")
                                 
                             
-                            # 2단계 판정
-                            if zone_step1 and not zone_step2 and prev_distance_to_plane2 > pass_threshold >= distance_to_plane2 and is_in_polygon2:
+                            # 2단계 판정 (히스테리시스 적용)
+                            if zone_step1 and not zone_step2 and prev_distance_to_plane2 > THRESHOLD_HIGH >= distance_to_plane2 and is_in_polygon2:
                                     print("****** Plane 2 Passed - STRIKE! ******")
 
 
@@ -623,8 +651,8 @@ def main():
                                 prev_distance_to_plane1 = None
                                 prev_distance_to_plane2 = None
                                 
-                            # 볼 판정
-                            elif  distance_to_plane2 <= pass_threshold and not is_in_polygon2:
+                            # 볼 판정 (히스테리시스 적용 - 낮은 임계값으로만 초기화)
+                            elif distance_to_plane2 <= THRESHOLD_LOW and not is_in_polygon2:
                                 current_time = time.time()
                                 if current_time - last_time > 2.0:
                                     
@@ -857,12 +885,18 @@ def main():
 
         fps_start_time = now # 다음 프레임 계산을 위해 시작 시간 업데이트
 
-        # 계산된 FPS 값 표시 (0.5초마다 업데이트된 값)
-        cv2.putText(overlay_frame, f"FPS: {display_fps_value:.1f}", (10, 30),
-                cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
-        # 원본 프레임에도 동일하게 표시 (선택 사항)
-        cv2.putText(frame, f"FPS: {display_fps_value:.1f}", (10, 30),
-                cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
+        # FPS 정보 표시 (작은 글씨, 2줄)
+        # 1줄: 영상 FPS (고정값)
+        cv2.putText(overlay_frame, f"Source: {source_fps:.0f} FPS", (10, 25),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
+        cv2.putText(frame, f"Source: {source_fps:.0f} FPS", (10, 25),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
+        
+        # 2줄: 처리 FPS (실시간 계산)
+        cv2.putText(overlay_frame, f"Process: {display_fps_value:.1f} FPS", (10, 45),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
+        cv2.putText(frame, f"Process: {display_fps_value:.1f} FPS", (10, 45),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
         
         # 프레임 표시
         cv2.imshow('ARUCO Tracker with Strike Zone', overlay_frame)
@@ -905,10 +939,22 @@ def main():
                     # if 'radius' in locals(): frozen_ball_radius = radius # 필요시 현재 공 반지름도 저장
 
         elif key & 0xFF == ord('b'):
-            cv2.imwrite("strike_zone.png", overlay_frame)
-            print("스트라이크 존 이미지가 저장되었습니다.")
-            cv2.imwrite("ball_zone.png", overlay_frame)
-            print("볼 존 이미지가 저장되었습니다.")
+            # 현재 공의 3D 좌표 출력
+            if current_ball_3d_coord is not None:
+                print("\n" + "="*50)
+                print("🎾 현재 공의 3D 좌표 (마커 기준)")
+                print("="*50)
+                print(f"  X: {current_ball_3d_coord[0]:.6f} m")
+                print(f"  Y: {current_ball_3d_coord[1]:.6f} m")
+                print(f"  Z: {current_ball_3d_coord[2]:.6f} m")
+                print("="*50 + "\n")
+                
+                # 스크린샷도 저장
+                cv2.imwrite("ball_position_snapshot.png", overlay_frame)
+                print("📸 스크린샷이 'ball_position_snapshot.png'로 저장되었습니다.\n")
+            else:
+                print("⚠️ 공이 감지되지 않았습니다!")
+                
         elif key & 0xFF == ord('c'):
             # 데이터 초기화
             detected_strike_points = []

@@ -46,44 +46,52 @@ class CameraManager:
         Returns:
             선택된 카메라 인덱스
         """
-        window = tk.Tk()
-        window.title("카메라 선택")
-        window.geometry("1280x720")
         
-        cameras = self.get_camera_list()
-        if not cameras:
-            print("사용 가능한 카메라가 없습니다")
-            return None
-        
-        n_cameras = len(cameras)
-        cols = min(3, n_cameras)
-        rows = (n_cameras + cols - 1) // cols
-        
-        previews = []
-        for i, camera in enumerate(cameras):
-            idx = int(camera.split()[1])
-            preview = CameraPreview(window, idx, self)
-            preview.frame.grid(row=i//cols, column=i%cols, padx=10, pady=10)
-            previews.append(preview)
-        
-        def on_closing():
-            # 모든 카메라 미리보기 스레드 중지
+        try:
+            window = tk.Tk()
+            window.title("카메라 선택")
+            window.geometry("1280x720")
+            
+            cameras = self.get_camera_list()
+            if not cameras:
+                print("사용 가능한 카메라가 없습니다")
+                return None
+            
+            n_cameras = len(cameras)
+            cols = min(3, n_cameras)
+            rows = (n_cameras + cols - 1) // cols
+            
+            previews = []
+            for i, camera in enumerate(cameras):
+                idx = int(camera.split()[1])
+                preview = CameraPreview(window, idx, self)
+                preview.frame.grid(row=i//cols, column=i%cols, padx=10, pady=10)
+                previews.append(preview)
+            
+            def on_closing():
+                # 모든 카메라 미리보기 스레드 중지
+                for preview in previews:
+                    preview.stop()
+                self.shutdown_event.set()  # 전체 종료 신호 전파
+                window.destroy()
+                # cv2 창 종료 및 프로세스 종료
+                cv2.destroyAllWindows()
+                logging.shutdown()
+                sys.exit(0)
+            
+            window.protocol("WM_DELETE_WINDOW", on_closing)
+            window.mainloop()
+            
             for preview in previews:
                 preview.stop()
-            self.shutdown_event.set()  # 전체 종료 신호 전파
-            window.destroy()
-            # cv2 창 종료 및 프로세스 종료
-            cv2.destroyAllWindows()
-            logging.shutdown()
-            sys.exit(0)
-        
-        window.protocol("WM_DELETE_WINDOW", on_closing)
-        window.mainloop()
-        
-        for preview in previews:
-            preview.stop()
-        
-        return self.selected_camera_index
+            
+            return self.selected_camera_index
+    
+        except Exception as e:
+            print(f"ERROR: 카메라 선택 GUI 에러: {e}")
+            import traceback
+            traceback.print_exc()
+            return None
     
     def set_selected_camera(self, index):
         """
