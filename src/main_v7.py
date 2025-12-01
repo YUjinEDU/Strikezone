@@ -11,7 +11,8 @@ from collections import deque
 from config import *
 from camera import CameraManager
 from aruco_detector import ArucoDetector
-from tracker_v1 import KalmanTracker, BallDetector, HandDetector
+from tracker_v1 import KalmanTracker, HandDetector
+from hybrid_detector import HybridDetector  # 하이브리드 탐지기
 from effects import TextEffect
 from dashboard import Dashboard
 from kalman_filter import KalmanFilter3D
@@ -181,8 +182,8 @@ def main():
     # ArUco
     aruco_detector = ArucoDetector(ARUCO_MARKER_SIZE, camera_matrix, dist_coeffs)
 
-    # 공 검출기
-    ball_detector = BallDetector(GREEN_LOWER, GREEN_UPPER)
+    # 공 검출기 (하이브리드: FMO + Color)
+    ball_detector = HybridDetector(GREEN_LOWER, GREEN_UPPER)
 
     # 대시보드
     dashboard = Dashboard()
@@ -350,11 +351,11 @@ def main():
                             thickness=2
                         )
 
-                    # 공 검출
-                    center, radius, _ = ball_detector.detect(analysis_frame)
+                    # 공 검출 (하이브리드: FMO + Color)
+                    center, radius, detect_method = ball_detector.detect(analysis_frame)
                     if center and radius > 0.4:
-                        # 공 표시
-                        ball_detector.draw_ball(overlay_frame, center, radius)
+                        # 공 표시 (탐지 방법에 따라 색상 구분)
+                        ball_detector.draw_ball(overlay_frame, center, radius, detect_method)
 
                         # 카메라 좌표계 3D 복원(근사) → 마커 좌표계로 변환
                         estimated_Z = (camera_matrix[0, 0] * BALL_RADIUS_REAL) / max(1e-6, radius)
@@ -443,13 +444,14 @@ def main():
                             print(f"[판정] plane1(통과:{plane1_crossed}, 존내부:{plane1_in_zone}), plane2(존내부:{plane2_in_zone})")
                             print(f"[판정] 결과: {'스트라이크' if is_strike else '볼'}")
                             
-                            # 속도 계산 (plane1, plane2 둘 다 스트라이크존 내부 통과 시에만)
-                            if is_strike and (t_cross_plane1 is not None):
+                            # 속도 계산 (plane1, plane2 둘 다 통과하면 계산 - 스트라이크/볼 무관)
+                            if plane1_crossed and (t_cross_plane1 is not None):
                                 dt = max(1e-6, (t_cross_plane2 - t_cross_plane1))
                                 v_depth_mps = ZONE_DEPTH / dt
                                 v_kmh = v_depth_mps * 3.6
                                 final_velocity = v_kmh
                                 display_velocity = v_kmh
+                                print(f"[속도] {v_kmh:.1f} km/h (dt={dt*1000:.1f}ms)")
                             else:
                                 v_kmh = 0.0
                             
@@ -607,10 +609,19 @@ def main():
         # 오버레이 표시
         cv2.putText(overlay_frame, f"FPS: {display_fps_value:.1f}", (10, 30),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
+        
+        # 속도 표시 (측정된 경우)
         if display_velocity > 0:
-            cv2.putText(overlay_frame, f"{display_velocity:.1f} km/h",
-                        (10, overlay_frame.shape[0] - 30),
-                        cv2.FONT_HERSHEY_SIMPLEX, 1.0, (0, 255, 0), 2, cv2.LINE_AA)
+            speed_text = f"{display_velocity:.1f} km/h"
+            # 배경 박스
+            text_size = cv2.getTextSize(speed_text, cv2.FONT_HERSHEY_SIMPLEX, 1.2, 3)[0]
+            x_pos = overlay_frame.shape[1] - text_size[0] - 20  # 오른쪽 정렬
+            y_pos = 50
+            cv2.rectangle(overlay_frame, (x_pos - 10, y_pos - text_size[1] - 10), 
+                         (x_pos + text_size[0] + 10, y_pos + 10), (0, 0, 0), -1)
+            cv2.putText(overlay_frame, speed_text,
+                        (x_pos, y_pos),
+                        cv2.FONT_HERSHEY_SIMPLEX, 1.2, (0, 255, 255), 3, cv2.LINE_AA)
 
         cv2.imshow('ARUCO Tracker with Strike Zone', overlay_frame)
         if is_video_mode:

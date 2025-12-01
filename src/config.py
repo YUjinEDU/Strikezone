@@ -80,3 +80,19 @@ STRIKE_COLOR = (0, 200, 200)
 PITCH_EVENT_COOLDOWN = 2.0      # (초)
 TRAJECTORY_DISPLAY_DURATION = 2.0
 FPS_UPDATE_INTERVAL = 0.5
+
+# ===========================================
+# 하이브리드 탐지 설정 (Hybrid Detection)
+# ===========================================
+
+# FMO (배경 차분) 설정
+FMO_HISTORY = 300               # 배경 모델 히스토리 길이
+FMO_DIST2_THRESHOLD = 400.0     # 배경 차분 임계값
+FMO_DETECT_SHADOWS = False      # 그림자 감지 (True=정확도↑ 연산량↑)
+FMO_SCORE_THRESHOLD = 500       # FMO 신뢰도 임계값 (이상이면 FMO 결과 우선)
+
+# 컨투어 필터링
+CONTOUR_MIN_AREA = 30           # 최소 컨투어 면적
+CONTOUR_MAX_AREA = 5000         # 최대 컨투어 면적
+CONTOUR_MIN_CIRCULARITY = 0.5   # 최소 원형도 (Color 탐지)
+FMO_MIN_ASPECT_RATIO = 1.2      # FMO 최소 종횡비 (잔상 감지)

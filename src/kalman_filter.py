@@ -118,6 +118,15 @@ class KalmanFilter3D:
         """
         return self.kf.statePost[3:].flatten()
     
+    def get_state(self):
+        """
+        전체 상태 벡터 반환 (위치 + 속도)
+        
+        Returns:
+            전체 상태 벡터 [x, y, z, vx, vy, vz]
+        """
+        return self.kf.statePost.flatten()
+    
     def reset(self):
         """필터 상태 초기화"""
         self.kf.statePost = np.zeros((6, 1), dtype=np.float32)
