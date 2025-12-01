@@ -1,7 +1,7 @@
 import cv2
 import numpy as np
 import imutils
-import mediapipe as mp
+# import mediapipe as mp
 from collections import deque
 
 class KalmanTracker:
@@ -186,60 +186,60 @@ class BallDetector:
             thickness = int(np.sqrt(64 / float(i + 1)) * 2.5)
             cv2.line(frame, pt1, pt2, color, thickness)
 
-class PoseEstimator:
-    def __init__(self):
-        self.mp_pose = mp.solutions.pose
-        self.pose = self.mp_pose.Pose()
+# class PoseEstimator:
+#     def __init__(self):
+#         self.mp_pose = mp.solutions.pose
+#         self.pose = self.mp_pose.Pose()
     
-    def estimate(self, frame):
-        """프레임에서 포즈 추정"""
-        rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-        results = self.pose.process(rgb_frame)
-        return results.pose_landmarks
+#     def estimate(self, frame):
+#         """프레임에서 포즈 추정"""
+#         rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+#         results = self.pose.process(rgb_frame)
+#         return results.pose_landmarks
 
-class HandDetector:
-    """손 감지 및 제스처 인식 클래스"""
+# class HandDetector:
+#     """손 감지 및 제스처 인식 클래스"""
     
-    def __init__(self, max_hands=1, min_detection_confidence=0.7, min_tracking_confidence=0.7):
-        self.mp_hands = mp.solutions.hands
-        self.hands = self.mp_hands.Hands(
-            max_num_hands=max_hands, 
-            min_detection_confidence=min_detection_confidence, 
-            min_tracking_confidence=min_tracking_confidence
-        )
+#     def __init__(self, max_hands=1, min_detection_confidence=0.7, min_tracking_confidence=0.7):
+#         self.mp_hands = mp.solutions.hands
+#         self.hands = self.mp_hands.Hands(
+#             max_num_hands=max_hands, 
+#             min_detection_confidence=min_detection_confidence, 
+#             min_tracking_confidence=min_tracking_confidence
+#         )
         
-    def find_hands(self, frame):
-        """프레임에서 손 감지"""
-        rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-        self.results = self.hands.process(rgb_frame)
-        return self.results
+#     def find_hands(self, frame):
+#         """프레임에서 손 감지"""
+#         rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+#         self.results = self.hands.process(rgb_frame)
+#         return self.results
     
 
-    def is_hand_open(self):
-        """손바닥이 펴진 상태인지 확인"""
-        if self.results.multi_hand_landmarks:
-            for hand_landmarks in self.results.multi_hand_landmarks:
-                # 손가락 끝 위치
-                tips = [hand_landmarks.landmark[i] for i in [8, 12, 16, 20]]
-                # 손가락이 펴졌는지 간단 체크
-                if all(tip.y < hand_landmarks.landmark[i - 2].y for tip, i in zip(tips, [8, 12, 16, 20])):
-                    return True
-        return False
+#     def is_hand_open(self):
+#         """손바닥이 펴진 상태인지 확인"""
+#         if self.results.multi_hand_landmarks:
+#             for hand_landmarks in self.results.multi_hand_landmarks:
+#                 # 손가락 끝 위치
+#                 tips = [hand_landmarks.landmark[i] for i in [8, 12, 16, 20]]
+#                 # 손가락이 펴졌는지 간단 체크
+#                 if all(tip.y < hand_landmarks.landmark[i - 2].y for tip, i in zip(tips, [8, 12, 16, 20])):
+#                     return True
+#         return False
     
-    def is_index_finger_only(self):
-        """검지 손가락만 펴져 있는지 확인"""
-        if self.results.multi_hand_landmarks:
-            for hand_landmarks in self.results.multi_hand_landmarks:
-                index_tip = hand_landmarks.landmark[8]   # 검지 손가락 끝
-                index_mcp = hand_landmarks.landmark[5]   # 검지 손가락 관절
+#     def is_index_finger_only(self):
+#         """검지 손가락만 펴져 있는지 확인"""
+#         if self.results.multi_hand_landmarks:
+#             for hand_landmarks in self.results.multi_hand_landmarks:
+#                 index_tip = hand_landmarks.landmark[8]   # 검지 손가락 끝
+#                 index_mcp = hand_landmarks.landmark[5]   # 검지 손가락 관절
 
-                # 검지만 올라갔는지 확인
-                other_fingers_folded = all(
-                    hand_landmarks.landmark[i].y > hand_landmarks.landmark[i - 2].y
-                    for i in [12, 16, 20]  # 중지, 약지, 새끼 손가락
-                )
+#                 # 검지만 올라갔는지 확인
+#                 other_fingers_folded = all(
+#                     hand_landmarks.landmark[i].y > hand_landmarks.landmark[i - 2].y
+#                     for i in [12, 16, 20]  # 중지, 약지, 새끼 손가락
+#                 )
 
-                if index_tip.y < index_mcp.y and other_fingers_folded:
-                    return True
-        return False
+#                 if index_tip.y < index_mcp.y and other_fingers_folded:
+#                     return True
+#         return False
 

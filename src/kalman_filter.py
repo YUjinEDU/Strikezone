@@ -27,9 +27,23 @@ class KalmanFilter3D:
             [0, 0, 1, 0, 0, 0]
         ], dtype=np.float32)
         
-        # 공정 잡음, 측정 잡음
-        self.kf.processNoiseCov = np.eye(6, dtype=np.float32) * 0.01
-        self.kf.measurementNoiseCov = np.eye(3, dtype=np.float32) * 0.1
+        # 공정 잡음 (프로세스 노이즈) - 위치보다 속도에 더 큰 불확실성
+        # 공이 빠르게 움직일 수 있으므로 속도 변화 허용
+        self.kf.processNoiseCov = np.diag([
+            0.001,  # x 위치
+            0.001,  # y 위치 (깊이)
+            0.001,  # z 위치
+            0.1,    # vx 속도 (가속 허용)
+            0.1,    # vy 속도
+            0.1     # vz 속도
+        ]).astype(np.float32)
+        
+        # 측정 잡음 - 깊이(y)가 가장 불확실
+        self.kf.measurementNoiseCov = np.diag([
+            0.05,   # x 측정 노이즈 (좌우)
+            0.2,    # y 측정 노이즈 (깊이 - 가장 불확실)
+            0.05    # z 측정 노이즈 (높이)
+        ]).astype(np.float32)
         
         # 초기 오차 공분산
         self.kf.errorCovPost = np.eye(6, dtype=np.float32)

@@ -20,8 +20,11 @@ if not os.path.exists(log_dir):
 LOG_FILENAME = os.path.join(log_dir, f"strike_log_{datetime.now().strftime('%Y%m%d_%H%M%S')}.txt")
 
 # 색상 기반 객체 추적 범위 (HSV)
-GREEN_LOWER = (29, 86, 6)
-GREEN_UPPER = (64, 255, 255)
+# 대상 색상: 노란-초록 계열 (Yellow-Green)
+# rgba(187,199,0), rgba(204,218,38), rgba(142,143,0), 
+# rgba(198,215,0), rgba(188,192,0), rgba(131,130,0)
+GREEN_LOWER = (25, 180, 100)   # H:25~40, S:180~255, V:100~255
+GREEN_UPPER = (45, 255, 255)
 
 """
 좌표계 정의(마커 좌표계, 단위 m)

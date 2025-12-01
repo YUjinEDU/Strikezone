@@ -20,12 +20,28 @@ class ArucoDetector:
         return corners, ids, rejected
     
     def estimate_pose(self, corners):
-        """마커 포즈 추정"""
+        """마커 포즈 추정 (OpenCV 4.8+ 호환)"""
         if len(corners) > 0:
-            rvecs, tvecs, _ = aruco.estimatePoseSingleMarkers(
-                corners, self.marker_size, self.camera_matrix, self.dist_coeffs
-            )
-            return rvecs, tvecs
+            rvecs = []
+            tvecs = []
+            # 각 마커에 대해 solvePnP 사용 (새 OpenCV 버전 호환)
+            obj_points = np.array([
+                [-self.marker_size/2,  self.marker_size/2, 0],
+                [ self.marker_size/2,  self.marker_size/2, 0],
+                [ self.marker_size/2, -self.marker_size/2, 0],
+                [-self.marker_size/2, -self.marker_size/2, 0]
+            ], dtype=np.float32)
+            
+            for corner in corners:
+                success, rvec, tvec = cv2.solvePnP(
+                    obj_points, corner, self.camera_matrix, self.dist_coeffs
+                )
+                if success:
+                    rvecs.append(rvec)
+                    tvecs.append(tvec)
+            
+            if rvecs:
+                return rvecs, tvecs
         return None, None
     
     def draw_axes(self, frame, rvec, tvec, size=0.05):
@@ -175,8 +191,8 @@ class ArucoDetector:
             
             # 연결선 그리기
             for i in range(len(projected_2d) - 1):
-                pt1 = tuple(projected_2d[i])
-                pt2 = tuple(projected_2d[i + 1])
+                pt1 = (int(projected_2d[i][0]), int(projected_2d[i][1]))
+                pt2 = (int(projected_2d[i + 1][0]), int(projected_2d[i + 1][1]))
                 cv2.line(frame, pt1, pt2, color, thickness, cv2.LINE_AA)
                 
         except Exception as e:
@@ -215,8 +231,8 @@ class ArucoDetector:
             if number_text is not None:
                 text = str(number_text)
                 font = cv2.FONT_HERSHEY_SIMPLEX
-                font_scale = 0.8
-                font_thickness = 2
+                font_scale = 0.48  # 0.8 * 0.6 = 0.48 (40% 축소)
+                font_thickness = 1
                 
                 # 텍스트 크기 계산
                 text_size = cv2.getTextSize(text, font, font_scale, font_thickness)[0]
@@ -225,7 +241,7 @@ class ArucoDetector:
                 
                 # 텍스트 배경 (가독성)
                 cv2.putText(frame, text, (text_x, text_y), font, font_scale, 
-                           (255, 255, 255), font_thickness + 2, cv2.LINE_AA)
+                           (255, 255, 255), font_thickness + 1, cv2.LINE_AA)
                 # 텍스트
                 cv2.putText(frame, text, (text_x, text_y), font, font_scale, 
                            text_color, font_thickness, cv2.LINE_AA)

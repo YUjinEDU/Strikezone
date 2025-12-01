@@ -11,7 +11,7 @@ from collections import deque
 from config import *
 from camera import CameraManager
 from aruco_detector import ArucoDetector
-from tracker_v1 import KalmanTracker, HandDetector
+from tracker_v1 import KalmanTracker
 from hybrid_detector import HybridDetector  # 하이브리드 탐지기
 from effects import TextEffect
 from dashboard import Dashboard
@@ -112,10 +112,18 @@ def main():
     t_cross_plane1 = None
     t_cross_plane2 = None
     
-    # 투구 상태 추적
+    # 투구 상태 추적 (카메라 위치에 관계없이 동작)
     plane1_crossed = False      # plane1 통과 여부
+    plane2_crossed = False      # plane2 통과 여부 (새로 추가)
     plane1_in_zone = False      # plane1 통과 시 스트라이크존 내부 여부
+    plane2_in_zone = False      # plane2 통과 시 스트라이크존 내부 여부 (새로 추가)
     cross_point_p1_saved = None # plane1 통과 지점 저장
+    cross_point_p2_saved = None # plane2 통과 지점 저장 (새로 추가)
+    first_plane_time = None     # 먼저 통과한 평면 시간 (카메라 위치 무관)
+    
+    # 판정 쿨다운 (연속 판정 방지)
+    last_judgment_time = 0.0    # 마지막 판정 시간
+    judgment_cooldown = 2.0     # 판정 쿨다운 (초)
 
     # FPS 표시용
     fps_start_time = time.time()
@@ -130,7 +138,7 @@ def main():
     final_velocity = 0.0
 
     # 손 감지/텍스트 효과
-    hand_detector = HandDetector()
+    # hand_detector = HandDetector()
     text_effect = TextEffect()
 
     # 입력 선택
@@ -212,6 +220,12 @@ def main():
 
     # 칼만 필터(3D)
     kalman_tracker = KalmanFilter3D()
+
+    # 프레임 간 속도 측정용
+    prev_ball_pos_marker = None  # 이전 프레임 공 위치 (마커 좌표계)
+    prev_ball_time = None        # 이전 프레임 시간
+    frame_speed_buffer = []      # 최근 N프레임 속도 저장 (이동평균용)
+    MAX_SPEED_BUFFER = 5         # 이동평균 프레임 수
 
     # 박스/존 코너(마커 좌표계 그대로 사용)
     box_corners_3d = aruco_detector.get_box_corners_3d(BOX_MIN, BOX_MAX)
@@ -298,7 +312,7 @@ def main():
             clip_recorder.feed(overlay_frame)
 
         # 손 감지(현재는 항상 시작)
-        hand_detector.find_hands(frame)
+        # hand_detector.find_hands(frame)
         ar_started = True
 
         if ar_started:
@@ -357,8 +371,19 @@ def main():
                         # 공 표시 (탐지 방법에 따라 색상 구분)
                         ball_detector.draw_ball(overlay_frame, center, radius, detect_method)
 
-                        # 카메라 좌표계 3D 복원(근사) → 마커 좌표계로 변환
-                        estimated_Z = (camera_matrix[0, 0] * BALL_RADIUS_REAL) / max(1e-6, radius)
+                        # === 깊이 추정 보정 ===
+                        # 기본 깊이 추정 (공 크기 기반)
+                        estimated_Z_ball = (camera_matrix[0, 0] * BALL_RADIUS_REAL) / max(1e-6, radius)
+                        
+                        # ArUco 마커 기준 깊이 (tvec[2])를 참조하여 보정
+                        marker_depth = float(tvec[2][0]) if tvec is not None else 1.0
+                        
+                        # 깊이 보정: 마커 깊이 근처로 제한 (마커 ±1m 범위)
+                        min_depth = max(0.1, marker_depth - 1.0)
+                        max_depth = marker_depth + 1.0
+                        estimated_Z = np.clip(estimated_Z_ball, min_depth, max_depth)
+                        
+                        # 카메라 좌표계 3D 복원
                         ball_3d_cam = np.array([
                             (center[0] - camera_matrix[0,2]) * estimated_Z / camera_matrix[0,0],
                             (center[1] - camera_matrix[1,2]) * estimated_Z / camera_matrix[1,1],
@@ -370,6 +395,49 @@ def main():
                         filtered_point = aruco_detector.point_to_marker_coord(
                             np.array(filtered_point_kalman, dtype=np.float32), rvec, tvec
                         )
+                        
+                        # === 프레임 간 속도 계산 (마커 좌표계 Y축 = 깊이 방향) ===
+                        now_time = time.perf_counter()
+                        if prev_ball_pos_marker is not None and prev_ball_time is not None:
+                            dt_frame = now_time - prev_ball_time
+                            if dt_frame > 0.001:  # 1ms 이상일 때만
+                                # Y축(깊이) 이동 거리로 속도 계산 (투구 방향)
+                                dy = filtered_point[1] - prev_ball_pos_marker[1]
+                                # 3D 이동 거리
+                                dist_3d = np.linalg.norm(filtered_point - prev_ball_pos_marker)
+                                
+                                # 주로 Y축 이동이면 유효한 속도
+                                if abs(dy) > 0.01:  # 1cm 이상 깊이 이동
+                                    speed_mps = abs(dy) / dt_frame  # Y축 속도
+                                    frame_speed_kmh = speed_mps * 3.6
+                                    
+                                    # 합리적 범위 (1~200 km/h)만 버퍼에 추가
+                                    if 1.0 < frame_speed_kmh < 200.0:
+                                        frame_speed_buffer.append(frame_speed_kmh)
+                                        if len(frame_speed_buffer) > MAX_SPEED_BUFFER:
+                                            frame_speed_buffer.pop(0)
+                        
+                        prev_ball_pos_marker = filtered_point.copy()
+                        prev_ball_time = now_time
+                        
+                        # 이동평균 속도
+                        if len(frame_speed_buffer) > 0:
+                            realtime_speed_kmh = sum(frame_speed_buffer) / len(frame_speed_buffer)
+                        else:
+                            realtime_speed_kmh = 0.0
+                        
+                        # === 디버그: 실시간 좌표 + 속도 표시 ===
+                        debug_text = f"X:{filtered_point[0]:.2f} Y:{filtered_point[1]:.2f} Z:{filtered_point[2]:.2f}"
+                        cv2.putText(overlay_frame, debug_text, (10, 30), 
+                                   cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
+                        # 실시간 속도 표시
+                        speed_text = f"Speed: {realtime_speed_kmh:.1f} km/h"
+                        cv2.putText(overlay_frame, speed_text, (10, 60), 
+                                   cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
+                        # 스트라이크존 범위 표시
+                        zone_text = f"Zone: X[-0.15~0.15] Z[0.25~0.65]"
+                        cv2.putText(overlay_frame, zone_text, (10, 90), 
+                                   cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 255), 2)
 
                         # 궤적 기록
                         traj_x.append(filtered_point[0]); traj_y.append(filtered_point[1]); traj_z.append(filtered_point[2])
@@ -394,10 +462,15 @@ def main():
                         alpha2 = 0.0
                         
                         if prev_time_perf is not None and prev_distance_to_plane1 is not None:
-                            # plane1 통과 감지: 이전 프레임에서 앞(+), 현재 프레임에서 뒤(-) 또는 위
-                            if (prev_distance_to_plane1 > 0.0) and (d1 <= 0.0):
+                            # plane1 통과 감지: 양방향 통과 감지 (앞→뒤 또는 뒤→앞)
+                            # 정방향: 이전 프레임에서 앞(+), 현재 프레임에서 뒤(-)
+                            # 역방향: 이전 프레임에서 뒤(-), 현재 프레임에서 앞(+)
+                            forward_cross = (prev_distance_to_plane1 > 0.0) and (d1 <= 0.0)
+                            backward_cross = (prev_distance_to_plane1 < 0.0) and (d1 >= 0.0)
+                            
+                            if forward_cross or backward_cross:
                                 crossed_p1 = True
-                                alpha1 = prev_distance_to_plane1 / (prev_distance_to_plane1 - d1 + 1e-9)
+                                alpha1 = abs(prev_distance_to_plane1) / (abs(prev_distance_to_plane1) + abs(d1) + 1e-9)
                                 
                                 if len(traj_x) >= 2:
                                     prev_pt = np.array([traj_x[-2], traj_y[-2], traj_z[-2]], dtype=np.float32)
@@ -407,10 +480,13 @@ def main():
                                     cross_point_p1 = filtered_point.copy()
                         
                         if prev_time_perf is not None and prev_distance_to_plane2 is not None:
-                            # plane2 통과 감지
-                            if (prev_distance_to_plane2 > 0.0) and (d2 <= 0.0):
+                            # plane2 통과 감지: 양방향 통과 감지
+                            forward_cross2 = (prev_distance_to_plane2 > 0.0) and (d2 <= 0.0)
+                            backward_cross2 = (prev_distance_to_plane2 < 0.0) and (d2 >= 0.0)
+                            
+                            if forward_cross2 or backward_cross2:
                                 crossed_p2 = True
-                                alpha2 = prev_distance_to_plane2 / (prev_distance_to_plane2 - d2 + 1e-9)
+                                alpha2 = abs(prev_distance_to_plane2) / (abs(prev_distance_to_plane2) + abs(d2) + 1e-9)
                                 
                                 if len(traj_x) >= 2:
                                     prev_pt = np.array([traj_x[-2], traj_y[-2], traj_z[-2]], dtype=np.float32)
@@ -426,34 +502,73 @@ def main():
                             plane1_in_zone = aruco_detector.is_point_in_strike_zone_3d(cross_point_p1, ball_zone_corners)
                             cross_point_p1_saved = cross_point_p1.copy()
                             
+                            # 첫 번째 통과 시간 기록 (카메라 위치 무관)
+                            if first_plane_time is None:
+                                first_plane_time = t_cross_plane1
+                            
                             if plane1_in_zone:
                                 print(f"[plane1 통과] X={cross_point_p1[0]:.3f}, Z={cross_point_p1[2]:.3f} → 스트라이크존 내부 ✓")
                             else:
                                 print(f"[plane1 통과] X={cross_point_p1[0]:.3f}, Z={cross_point_p1[2]:.3f} → 스트라이크존 밖 ✗")
 
-                        # === plane2 통과 처리 (판정 시점) ===
-                        if crossed_p2 and cross_point_p2 is not None:
+                        # === plane2 통과 처리 ===
+                        if crossed_p2 and (not plane2_crossed) and cross_point_p2 is not None:
+                            plane2_crossed = True
                             t_cross_plane2 = prev_time_perf + alpha2 * (now_perf - prev_time_perf)
                             plane2_in_zone = aruco_detector.is_point_in_strike_zone_3d(cross_point_p2, ball_zone_corners2)
+                            cross_point_p2_saved = cross_point_p2.copy()
                             
+                            # 첫 번째 통과 시간 기록 (카메라 위치 무관)
+                            if first_plane_time is None:
+                                first_plane_time = t_cross_plane2
+                            
+                            print(f"[plane2 통과] X={cross_point_p2[0]:.3f}, Z={cross_point_p2[2]:.3f} → 스트라이크존 내부: {plane2_in_zone}")
+                        
+                        # === 판정: 두 평면 모두 통과했을 때 (카메라 위치 무관) ===
+                        current_time = time.time()
+                        cooldown_passed = (current_time - last_judgment_time) >= judgment_cooldown
+                        
+                        if plane1_crossed and plane2_crossed and cooldown_passed:
                             # 스트라이크 조건: plane1 AND plane2 모두 스트라이크존 내부 통과
-                            is_strike = plane1_crossed and plane1_in_zone and plane2_in_zone
+                            is_strike = plane1_in_zone and plane2_in_zone
                             
                             # 디버그 로그
-                            print(f"[plane2 통과] X={cross_point_p2[0]:.3f}, Z={cross_point_p2[2]:.3f} → 스트라이크존 내부: {plane2_in_zone}")
-                            print(f"[판정] plane1(통과:{plane1_crossed}, 존내부:{plane1_in_zone}), plane2(존내부:{plane2_in_zone})")
+                            print(f"[판정] plane1(존내부:{plane1_in_zone}), plane2(존내부:{plane2_in_zone})")
                             print(f"[판정] 결과: {'스트라이크' if is_strike else '볼'}")
                             
-                            # 속도 계산 (plane1, plane2 둘 다 통과하면 계산 - 스트라이크/볼 무관)
-                            if plane1_crossed and (t_cross_plane1 is not None):
-                                dt = max(1e-6, (t_cross_plane2 - t_cross_plane1))
-                                v_depth_mps = ZONE_DEPTH / dt
-                                v_kmh = v_depth_mps * 3.6
-                                final_velocity = v_kmh
-                                display_velocity = v_kmh
-                                print(f"[속도] {v_kmh:.1f} km/h (dt={dt*1000:.1f}ms)")
+                            # 판정 시간 기록 (쿨다운 시작)
+                            last_judgment_time = current_time
+                            
+                            # 속도 계산: 절대값 dt 사용 (카메라 위치 무관)
+                            if t_cross_plane1 is not None and t_cross_plane2 is not None:
+                                dt = abs(t_cross_plane2 - t_cross_plane1)  # 절대값!
+                                
+                                MAX_VALID_DT = 0.5  # 500ms 이상이면 왔다갔다 한 것
+                                MIN_VALID_DT = 0.003  # 3ms 미만이면 비정상
+                                
+                                if dt < MIN_VALID_DT:
+                                    print(f"[속도] dt 너무 짧음 ({dt*1000:.1f}ms) - 칼만 속도 사용")
+                                    v_kmh = realtime_speed_kmh if realtime_speed_kmh > 0 else 0.0
+                                elif dt > MAX_VALID_DT:
+                                    print(f"[속도] dt 너무 김 ({dt*1000:.1f}ms) - 왔다갔다 감지, 칼만 속도 사용")
+                                    v_kmh = realtime_speed_kmh if realtime_speed_kmh > 0 else 0.0
+                                else:
+                                    # 정상 범위: 평면간 거리 기반 속도 계산
+                                    v_depth_mps = ZONE_DEPTH / dt
+                                    v_kmh = v_depth_mps * 3.6
+                                    
+                                    if v_kmh > 200:
+                                        print(f"[속도] 비정상 값 ({v_kmh:.1f} km/h) - 칼만 속도 사용")
+                                        v_kmh = realtime_speed_kmh if realtime_speed_kmh > 0 else 0.0
+                                    else:
+                                        print(f"[속도] {v_kmh:.1f} km/h (dt={dt*1000:.1f}ms)")
+                                
+                                # 최종 속도 저장
+                                if v_kmh > 0:
+                                    final_velocity = v_kmh
+                                    display_velocity = v_kmh
                             else:
-                                v_kmh = 0.0
+                                v_kmh = realtime_speed_kmh if realtime_speed_kmh > 0 else 0.0
                             
                             if is_strike:
                                 result_label = "스트라이크"
@@ -465,12 +580,20 @@ def main():
                                 text_effect.add_ball_effect()
 
                             # 교차 지점의 3D 좌표(plane2 위로 투영)
-                            try:
-                                point_on_plane2 = aruco_detector.project_point_onto_plane(
-                                    cross_point_p2, p2_0, p2_1, p2_2
-                                )
-                            except Exception:
-                                point_on_plane2 = cross_point_p2.copy()
+                            # cross_point_p2_saved 사용 (저장된 통과 지점)
+                            if cross_point_p2_saved is not None:
+                                try:
+                                    point_on_plane2 = aruco_detector.project_point_onto_plane(
+                                        cross_point_p2_saved, p2_0, p2_1, p2_2
+                                    )
+                                except Exception:
+                                    point_on_plane2 = cross_point_p2_saved.copy()
+                            elif cross_point_p1_saved is not None:
+                                # plane2 통과점이 없으면 plane1 통과점 사용
+                                point_on_plane2 = cross_point_p1_saved.copy()
+                            else:
+                                # 둘 다 없으면 현재 위치 사용
+                                point_on_plane2 = filtered_point.copy()
 
                             # ==== 영상 클립 저장(사전+사후 비동기) ====
                             ts = int(time.time())
@@ -508,20 +631,39 @@ def main():
 
                             # 상태 리셋: 다음 투구
                             plane1_crossed = False
+                            plane2_crossed = False
                             plane1_in_zone = False
+                            plane2_in_zone = False
                             cross_point_p1_saved = None
+                            cross_point_p2_saved = None
+                            first_plane_time = None
                             t_cross_plane1 = None
                             t_cross_plane2 = None
                             prev_distance_to_plane1 = None
                             prev_distance_to_plane2 = None
                             prev_time_perf = None
                             traj_x.clear(); traj_y.clear(); traj_z.clear()
+                            # 속도 버퍼 초기화
+                            frame_speed_buffer.clear()
+                            prev_ball_pos_marker = None
+                            prev_ball_time = None
+                            # 탐지기 연속성 리셋 (다음 공 탐지 준비)
+                            ball_detector.reset()
                         
-                        # === plane1 통과 후 plane2 미통과 (옆으로 빠진 경우) → 볼 판정 ===
-                        # 조건: plane1 통과했고, 현재 공이 plane2를 지나쳤는데(d2 < 0), plane2를 통과하지 않음
-                        elif plane1_crossed and (not crossed_p2) and (d2 < -0.05):
-                            # plane2 깊이를 5cm 이상 지나쳤는데 plane2 통과 감지 안됨 = 옆으로 빠짐
-                            print(f"[판정] plane1 통과 후 plane2 미통과 (옆으로 빠짐) → 볼")
+                        # === 한쪽 평면만 통과 후 옆으로 빠진 경우 → 볼 판정 ===
+                        # 조건1: plane1만 통과하고 plane2를 지나침 (투수 옆 카메라)
+                        # 조건2: plane2만 통과하고 plane1을 지나침 (포수 옆 카메라)
+                        one_plane_only = (plane1_crossed and not plane2_crossed) or (plane2_crossed and not plane1_crossed)
+                        passed_through = (d1 < -0.05) or (d2 < -0.05)  # 어느 한쪽이든 5cm 이상 지나침
+                        
+                        if one_plane_only and passed_through and cooldown_passed:
+                            if plane1_crossed and not plane2_crossed:
+                                print(f"[판정] plane1 통과 후 plane2 미통과 (옆으로 빠짐) → 볼")
+                            else:
+                                print(f"[판정] plane2 통과 후 plane1 미통과 (옆으로 빠짐) → 볼")
+                            
+                            # 판정 시간 기록 (쿨다운 시작)
+                            last_judgment_time = current_time
                             
                             result_label = "볼"
                             scoreboard.add_ball()
@@ -567,14 +709,24 @@ def main():
 
                             # 상태 리셋
                             plane1_crossed = False
+                            plane2_crossed = False
                             plane1_in_zone = False
+                            plane2_in_zone = False
                             cross_point_p1_saved = None
+                            cross_point_p2_saved = None
+                            first_plane_time = None
                             t_cross_plane1 = None
                             t_cross_plane2 = None
                             prev_distance_to_plane1 = None
                             prev_distance_to_plane2 = None
                             prev_time_perf = None
                             traj_x.clear(); traj_y.clear(); traj_z.clear()
+                            # 속도 버퍼 초기화
+                            frame_speed_buffer.clear()
+                            prev_ball_pos_marker = None
+                            prev_ball_time = None
+                            # 탐지기 연속성 리셋 (다음 공 탐지 준비)
+                            ball_detector.reset()
 
                         # 이전 값 업데이트
                         prev_distance_to_plane1 = d1
@@ -661,10 +813,15 @@ def main():
             plane1_crossed = False
             plane1_in_zone = False
             cross_point_p1_saved = None
+            last_judgment_time = 0.0  # 쿨다운 리셋
             print("상태 초기화")
         elif is_video_mode and key & 0xFF == ord(' '):
             play_pause = not play_pause
             print("일시정지" if play_pause else "재개")
+        elif key & 0xFF == ord('f'):
+            # FMO 토글
+            fmo_state = ball_detector.toggle_fmo()
+            print(f"FMO 탐지: {'활성화' if fmo_state else '비활성화'}")
 
     # 자원 해제
     if 'cap' in locals() and cap is not None:

@@ -3,10 +3,9 @@ import time
 import threading
 import numpy as np
 import dash
-from dash import dcc, html
+from dash import dcc, html, dash_table
 from dash.dependencies import Input, Output, State
 import plotly.graph_objs as go
-import dash_table
 from flask import send_from_directory
 
 from config import BOX_EDGES
@@ -51,11 +50,11 @@ class Dashboard:
     def _setup_static_routes(self):
         @self.app.server.route('/clips/<path:filename>')
         def serve_clips(filename):
-            print(f"📹 영상 요청: /clips/{filename}")
-            print(f"📂 클립 디렉토리: {self.clips_dir}")
+            # print(f"📹 영상 요청: /clips/{filename}")
+            # print(f"📂 클립 디렉토리: {self.clips_dir}")
             file_path = os.path.join(self.clips_dir, filename)
             if os.path.exists(file_path):
-                print(f"✅ 파일 존재: {file_path}")
+                # print(f"✅ 파일 존재: {file_path}")
                 return send_from_directory(self.clips_dir, filename)
             else:
                 print(f"❌ 파일 없음: {file_path}")
@@ -170,12 +169,14 @@ class Dashboard:
                 if new_selected_pitch_id is not None:
                     sel = next((p for p in self.all_pitches if p['id'] == new_selected_pitch_id), None)
                     if sel and sel.get('video_filename'):
-                        video_src = f"/clips/{sel['video_filename']}"
-                        print(f"🎥 비디오 소스 설정: {video_src}")
-                        print(f"📁 파일명: {sel['video_filename']}")
+                        # 타임스탬프 추가하여 브라우저 캐시 무효화
+                        cache_buster = int(time.time() * 1000)
+                        video_src = f"/clips/{sel['video_filename']}?t={cache_buster}"
+                        # print(f"🎬 비디오 소스 설정: {video_src}")
+                        # print(f"📁 파일명: {sel['video_filename']}")
                         full_path = os.path.join(self.clips_dir, sel['video_filename'])
-                        print(f"🔍 전체 경로: {full_path}")
-                        print(f"✅ 파일 존재: {os.path.exists(full_path)}")
+                        # print(f"🔍 전체 경로: {full_path}")
+                        # print(f"✅ 파일 존재: {os.path.exists(full_path)}")
                         if os.path.exists(full_path):
                             debug_msg = f"✅ {sel['video_filename']}"
                         else:
@@ -386,7 +387,7 @@ class Dashboard:
 
     def run_server(self, debug=False):
         def run():
-            self.app.run_server(
+            self.app.run(
                 port=self.port,
                 host=self.host,
                 debug=debug,
