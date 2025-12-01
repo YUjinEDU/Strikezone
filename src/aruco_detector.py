@@ -120,6 +120,33 @@ class ArucoDetector:
         """2D 점이 다각형 내부인지"""
         return cv2.pointPolygonTest(np.array(polygon, dtype=np.int32), point, False) >= 0
     
+    def is_point_in_strike_zone_3d(self, point_3d, zone_corners):
+        """
+        3D 점이 스트라이크존 영역 내부에 있는지 판정 (X, Z 좌표 기준)
+        
+        Args:
+            point_3d: 마커 좌표계의 3D 점 [x, y, z]
+            zone_corners: 스트라이크존 4개 코너 [[x,y,z], ...]
+                         순서: Bottom-left, Bottom-right, Top-right, Top-left
+        
+        Returns:
+            bool: 스트라이크존 내부에 있으면 True
+        """
+        # 스트라이크존 경계 추출 (X, Z 좌표 사용)
+        x_coords = zone_corners[:, 0]
+        z_coords = zone_corners[:, 2]
+        
+        x_min, x_max = np.min(x_coords), np.max(x_coords)
+        z_min, z_max = np.min(z_coords), np.max(z_coords)
+        
+        px, py, pz = point_3d[0], point_3d[1], point_3d[2]
+        
+        # X, Z 좌표가 스트라이크존 경계 내에 있는지 확인
+        in_x = x_min <= px <= x_max
+        in_z = z_min <= pz <= z_max
+        
+        return in_x and in_z
+    
     def point_to_marker_coord(self, point_3d_cam, rvec, tvec):
         """카메라 좌표계의 점을 마커 좌표계로 변환"""
         R_marker, _ = cv2.Rodrigues(rvec)

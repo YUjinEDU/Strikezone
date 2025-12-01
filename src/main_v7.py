@@ -110,7 +110,11 @@ def main():
     prev_time_perf = None
     t_cross_plane1 = None
     t_cross_plane2 = None
-    zone_step1 = False  # plane1 통과 완료 여부
+    
+    # 투구 상태 추적
+    plane1_crossed = False      # plane1 통과 여부
+    plane1_in_zone = False      # plane1 통과 시 스트라이크존 내부 여부
+    cross_point_p1_saved = None # plane1 통과 지점 저장
 
     # FPS 표시용
     fps_start_time = time.time()
@@ -377,107 +381,198 @@ def main():
                         d1 = aruco_detector.signed_distance_to_plane_oriented(filtered_point, p1_0, p1_1, p1_2, desired_dir=desired_depth_axis)
                         d2 = aruco_detector.signed_distance_to_plane_oriented(filtered_point, p2_0, p2_1, p2_2, desired_dir=desired_depth_axis)
 
-                        # 2D 폴리곤 내부 여부(현재 프레임 중심 픽셀 기준)
-                        in_poly1 = aruco_detector.is_point_in_polygon(center, projected_points)  if projected_points  is not None else False
-                        in_poly2 = aruco_detector.is_point_in_polygon(center, projected_points2) if projected_points2 is not None else False
-
                         # 고해상도 타임스탬프
                         now_perf = time.perf_counter()
 
-                        # plane1 통과(+ → 0 → −) + polygon 내부
+                        # === 통과 감지 (같은 프레임에서 plane1, plane2 둘 다 통과할 수 있음) ===
+                        crossed_p1 = False
+                        crossed_p2 = False
+                        cross_point_p1 = None
+                        cross_point_p2 = None
+                        alpha1 = 0.0
+                        alpha2 = 0.0
+                        
                         if prev_time_perf is not None and prev_distance_to_plane1 is not None:
-                            crossed_p1 = (prev_distance_to_plane1 > 0.0) and (d1 <= 0.0)
-                            if (not zone_step1) and crossed_p1 and in_poly1:
-                                # 보간으로 t_cross_plane1 갱신
+                            # plane1 통과 감지: 이전 프레임에서 앞(+), 현재 프레임에서 뒤(-) 또는 위
+                            if (prev_distance_to_plane1 > 0.0) and (d1 <= 0.0):
+                                crossed_p1 = True
                                 alpha1 = prev_distance_to_plane1 / (prev_distance_to_plane1 - d1 + 1e-9)
-                                t_cross_plane1 = prev_time_perf + alpha1 * (now_perf - prev_time_perf)
-                                zone_step1 = True  # 1단계 통과 활성화
-
-                        # plane2 통과(+ → 0 → −)
+                                
+                                if len(traj_x) >= 2:
+                                    prev_pt = np.array([traj_x[-2], traj_y[-2], traj_z[-2]], dtype=np.float32)
+                                    curr_pt = np.array([traj_x[-1], traj_y[-1], traj_z[-1]], dtype=np.float32)
+                                    cross_point_p1 = prev_pt + alpha1 * (curr_pt - prev_pt)
+                                else:
+                                    cross_point_p1 = filtered_point.copy()
+                        
                         if prev_time_perf is not None and prev_distance_to_plane2 is not None:
-                            crossed_p2 = (prev_distance_to_plane2 > 0.0) and (d2 <= 0.0)
-                            if crossed_p2:
+                            # plane2 통과 감지
+                            if (prev_distance_to_plane2 > 0.0) and (d2 <= 0.0):
+                                crossed_p2 = True
                                 alpha2 = prev_distance_to_plane2 / (prev_distance_to_plane2 - d2 + 1e-9)
-                                t_cross_plane2 = prev_time_perf + alpha2 * (now_perf - prev_time_perf)
+                                
+                                if len(traj_x) >= 2:
+                                    prev_pt = np.array([traj_x[-2], traj_y[-2], traj_z[-2]], dtype=np.float32)
+                                    curr_pt = np.array([traj_x[-1], traj_y[-1], traj_z[-1]], dtype=np.float32)
+                                    cross_point_p2 = prev_pt + alpha2 * (curr_pt - prev_pt)
+                                else:
+                                    cross_point_p2 = filtered_point.copy()
 
-                                if zone_step1 and (t_cross_plane1 is not None):
-                                    # 속도 계산
-                                    dt = max(1e-6, (t_cross_plane2 - t_cross_plane1))
-                                    v_depth_mps = ZONE_DEPTH / dt
-                                    v_kmh = v_depth_mps * 3.6
-                                    final_velocity = v_kmh
-                                    display_velocity = v_kmh
+                        # === plane1 통과 처리 ===
+                        if crossed_p1 and (not plane1_crossed) and cross_point_p1 is not None:
+                            plane1_crossed = True
+                            t_cross_plane1 = prev_time_perf + alpha1 * (now_perf - prev_time_perf)
+                            plane1_in_zone = aruco_detector.is_point_in_strike_zone_3d(cross_point_p1, ball_zone_corners)
+                            cross_point_p1_saved = cross_point_p1.copy()
+                            
+                            if plane1_in_zone:
+                                print(f"[plane1 통과] X={cross_point_p1[0]:.3f}, Z={cross_point_p1[2]:.3f} → 스트라이크존 내부 ✓")
+                            else:
+                                print(f"[plane1 통과] X={cross_point_p1[0]:.3f}, Z={cross_point_p1[2]:.3f} → 스트라이크존 밖 ✗")
 
-                                    # 스트/볼 판정: plane2 폴리곤 내부 여부로 결정
-                                    if in_poly2:
-                                        result_label = "스트라이크"
-                                        scoreboard.add_strike()
-                                        text_effect.add_strike_effect()
-                                    else:
-                                        result_label = "볼"
-                                        scoreboard.add_ball()
-                                        text_effect.add_ball_effect()
+                        # === plane2 통과 처리 (판정 시점) ===
+                        if crossed_p2 and cross_point_p2 is not None:
+                            t_cross_plane2 = prev_time_perf + alpha2 * (now_perf - prev_time_perf)
+                            plane2_in_zone = aruco_detector.is_point_in_strike_zone_3d(cross_point_p2, ball_zone_corners2)
+                            
+                            # 스트라이크 조건: plane1 AND plane2 모두 스트라이크존 내부 통과
+                            is_strike = plane1_crossed and plane1_in_zone and plane2_in_zone
+                            
+                            # 디버그 로그
+                            print(f"[plane2 통과] X={cross_point_p2[0]:.3f}, Z={cross_point_p2[2]:.3f} → 스트라이크존 내부: {plane2_in_zone}")
+                            print(f"[판정] plane1(통과:{plane1_crossed}, 존내부:{plane1_in_zone}), plane2(존내부:{plane2_in_zone})")
+                            print(f"[판정] 결과: {'스트라이크' if is_strike else '볼'}")
+                            
+                            # 속도 계산 (plane1, plane2 둘 다 스트라이크존 내부 통과 시에만)
+                            if is_strike and (t_cross_plane1 is not None):
+                                dt = max(1e-6, (t_cross_plane2 - t_cross_plane1))
+                                v_depth_mps = ZONE_DEPTH / dt
+                                v_kmh = v_depth_mps * 3.6
+                                final_velocity = v_kmh
+                                display_velocity = v_kmh
+                            else:
+                                v_kmh = 0.0
+                            
+                            if is_strike:
+                                result_label = "스트라이크"
+                                scoreboard.add_strike()
+                                text_effect.add_strike_effect()
+                            else:
+                                result_label = "볼"
+                                scoreboard.add_ball()
+                                text_effect.add_ball_effect()
 
-                                    # 교차 지점의 3D 좌표(plane2 위로 투영)
-                                    # project_point_onto_plane는 aruco_detector에 있음
-                                    # (repo의 정의에 따라 호출)
-                                    try:
-                                        # 일부 버전엔 project_point_onto_plane가 aruco_detector에 정의되어 있음
-                                        point_on_plane2 = aruco_detector.project_point_onto_plane(
-                                            filtered_point, p2_0, p2_1, p2_2
-                                        )
-                                    except Exception:
-                                        # 정의가 없을 경우, 근사치로 현재 filtered_point 사용
-                                        point_on_plane2 = filtered_point.copy()
+                            # 교차 지점의 3D 좌표(plane2 위로 투영)
+                            try:
+                                point_on_plane2 = aruco_detector.project_point_onto_plane(
+                                    cross_point_p2, p2_0, p2_1, p2_2
+                                )
+                            except Exception:
+                                point_on_plane2 = cross_point_p2.copy()
 
-                                    # ==== 영상 클립 저장(사전+사후 비동기) ====
-                                    ts = int(time.time())
-                                    clip_filename = f"pitch_{ts}.mp4"
-                                    clip_path = os.path.join(clips_dir, clip_filename)
-                                    # 사전 프레임 복사 후 recorder 시작
-                                    clip_recorder.start(list(prebuffer), clip_path, cap_fps, post_seconds=post_seconds)
-                                    print(f"✅ 영상 클립 저장 시작: {clip_path}")
+                            # ==== 영상 클립 저장(사전+사후 비동기) ====
+                            ts = int(time.time())
+                            clip_filename = f"pitch_{ts}.mp4"
+                            clip_path = os.path.join(clips_dir, clip_filename)
+                            clip_recorder.start(list(prebuffer), clip_path, cap_fps, post_seconds=post_seconds)
+                            print(f"✅ 영상 클립 저장 시작: {clip_path}")
 
-                                    # ==== Dashboard에 피치 append ====
-                                    trajectory_points = list(zip(traj_x, traj_y, traj_z))
-                                    
-                                    # 투구 번호
-                                    pitch_number = len(impact_points_on_plane2) + 1
-                                    
-                                    # plane2에 투영된 충돌 지점 저장
-                                    impact_points_on_plane2.append({
-                                        'point_3d': point_on_plane2,
-                                        'number': pitch_number
-                                    })
-                                    
-                                    dashboard.update_data({
-                                        # 2D 기록지는 plane2 폴리곤(x,z)
-                                        'record_sheet_polygon': [[p[0], p[2]] for p in ball_zone_corners2],
-                                        'strike_zone_corners_3d': ball_zone_corners.tolist(),
-                                        'ball_zone_corners_3d': ball_zone_corners.tolist(),
-                                        'ball_zone_corners2_3d': ball_zone_corners2.tolist(),
-                                        'box_corners_3d': box_corners_3d.tolist(),
-                                        'append_pitch': {
-                                            'result': result_label,
-                                            'speed_kmh': float(v_kmh),
-                                            'point_3d': [float(point_on_plane2[0]), float(point_on_plane2[1]), float(point_on_plane2[2])],
-                                            'trajectory_3d': [list(map(float, pt)) for pt in trajectory_points],
-                                            'timestamp': time.strftime('%Y-%m-%d %H:%M:%S'),
-                                            'video_filename': clip_filename,
-                                            'number': pitch_number
-                                        }
-                                    })
-                                    # 2D 기록지 포인트에도 추가(x,z)
-                                    record_sheet_points_xz.append([float(point_on_plane2[0]), float(point_on_plane2[2])])
+                            # ==== Dashboard에 피치 append ====
+                            trajectory_points = list(zip(traj_x, traj_y, traj_z))
+                            pitch_number = len(impact_points_on_plane2) + 1
+                            
+                            impact_points_on_plane2.append({
+                                'point_3d': point_on_plane2,
+                                'number': pitch_number
+                            })
+                            
+                            dashboard.update_data({
+                                'record_sheet_polygon': [[p[0], p[2]] for p in ball_zone_corners2],
+                                'strike_zone_corners_3d': ball_zone_corners.tolist(),
+                                'ball_zone_corners_3d': ball_zone_corners.tolist(),
+                                'ball_zone_corners2_3d': ball_zone_corners2.tolist(),
+                                'box_corners_3d': box_corners_3d.tolist(),
+                                'append_pitch': {
+                                    'result': result_label,
+                                    'speed_kmh': float(v_kmh),
+                                    'point_3d': [float(point_on_plane2[0]), float(point_on_plane2[1]), float(point_on_plane2[2])],
+                                    'trajectory_3d': [list(map(float, pt)) for pt in trajectory_points],
+                                    'timestamp': time.strftime('%Y-%m-%d %H:%M:%S'),
+                                    'video_filename': clip_filename,
+                                    'number': pitch_number
+                                }
+                            })
+                            record_sheet_points_xz.append([float(point_on_plane2[0]), float(point_on_plane2[2])])
 
-                                    # 상태 리셋: 다음 투구
-                                    zone_step1 = False
-                                    t_cross_plane1 = None
-                                    t_cross_plane2 = None
-                                    prev_distance_to_plane1 = None
-                                    prev_distance_to_plane2 = None
-                                    prev_time_perf = None
-                                    traj_x.clear(); traj_y.clear(); traj_z.clear()
+                            # 상태 리셋: 다음 투구
+                            plane1_crossed = False
+                            plane1_in_zone = False
+                            cross_point_p1_saved = None
+                            t_cross_plane1 = None
+                            t_cross_plane2 = None
+                            prev_distance_to_plane1 = None
+                            prev_distance_to_plane2 = None
+                            prev_time_perf = None
+                            traj_x.clear(); traj_y.clear(); traj_z.clear()
+                        
+                        # === plane1 통과 후 plane2 미통과 (옆으로 빠진 경우) → 볼 판정 ===
+                        # 조건: plane1 통과했고, 현재 공이 plane2를 지나쳤는데(d2 < 0), plane2를 통과하지 않음
+                        elif plane1_crossed and (not crossed_p2) and (d2 < -0.05):
+                            # plane2 깊이를 5cm 이상 지나쳤는데 plane2 통과 감지 안됨 = 옆으로 빠짐
+                            print(f"[판정] plane1 통과 후 plane2 미통과 (옆으로 빠짐) → 볼")
+                            
+                            result_label = "볼"
+                            scoreboard.add_ball()
+                            text_effect.add_ball_effect()
+                            v_kmh = 0.0
+                            
+                            # 마지막 위치를 기록
+                            point_on_plane2 = filtered_point.copy()
+                            
+                            # ==== 영상 클립 저장 ====
+                            ts = int(time.time())
+                            clip_filename = f"pitch_{ts}.mp4"
+                            clip_path = os.path.join(clips_dir, clip_filename)
+                            clip_recorder.start(list(prebuffer), clip_path, cap_fps, post_seconds=post_seconds)
+                            print(f"✅ 영상 클립 저장 시작: {clip_path}")
+
+                            # ==== Dashboard에 피치 append ====
+                            trajectory_points = list(zip(traj_x, traj_y, traj_z))
+                            pitch_number = len(impact_points_on_plane2) + 1
+                            
+                            impact_points_on_plane2.append({
+                                'point_3d': point_on_plane2,
+                                'number': pitch_number
+                            })
+                            
+                            dashboard.update_data({
+                                'record_sheet_polygon': [[p[0], p[2]] for p in ball_zone_corners2],
+                                'strike_zone_corners_3d': ball_zone_corners.tolist(),
+                                'ball_zone_corners_3d': ball_zone_corners.tolist(),
+                                'ball_zone_corners2_3d': ball_zone_corners2.tolist(),
+                                'box_corners_3d': box_corners_3d.tolist(),
+                                'append_pitch': {
+                                    'result': result_label,
+                                    'speed_kmh': float(v_kmh),
+                                    'point_3d': [float(point_on_plane2[0]), float(point_on_plane2[1]), float(point_on_plane2[2])],
+                                    'trajectory_3d': [list(map(float, pt)) for pt in trajectory_points],
+                                    'timestamp': time.strftime('%Y-%m-%d %H:%M:%S'),
+                                    'video_filename': clip_filename,
+                                    'number': pitch_number
+                                }
+                            })
+                            record_sheet_points_xz.append([float(point_on_plane2[0]), float(point_on_plane2[2])])
+
+                            # 상태 리셋
+                            plane1_crossed = False
+                            plane1_in_zone = False
+                            cross_point_p1_saved = None
+                            t_cross_plane1 = None
+                            t_cross_plane2 = None
+                            prev_distance_to_plane1 = None
+                            prev_distance_to_plane2 = None
+                            prev_time_perf = None
+                            traj_x.clear(); traj_y.clear(); traj_z.clear()
 
                         # 이전 값 업데이트
                         prev_distance_to_plane1 = d1
@@ -552,7 +647,9 @@ def main():
             prev_time_perf = None
             t_cross_plane1 = None
             t_cross_plane2 = None
-            zone_step1 = False
+            plane1_crossed = False
+            plane1_in_zone = False
+            cross_point_p1_saved = None
             print("상태 초기화")
         elif is_video_mode and key & 0xFF == ord(' '):
             play_pause = not play_pause
