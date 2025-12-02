@@ -123,7 +123,12 @@ def main():
     
     # 판정 쿨다운 (연속 판정 방지)
     last_judgment_time = 0.0    # 마지막 판정 시간
-    judgment_cooldown = 2.0     # 판정 쿨다운 (초)
+    judgment_cooldown = 3.0     # 판정 쿨다운 (초) - 2초에서 3초로 증가
+    
+    # 판정 완료 후 궤적 기록 중단 플래그
+    pitch_completed = False     # 판정 완료 후 다음 투구까지 추적 중단
+    pitch_completed_time = 0.0  # 판정 완료 시간
+    wait_for_reset = 1.5        # 판정 후 대기 시간 (초) - 공이 돌아가는 걸 기다림
 
     # FPS 표시용
     fps_start_time = time.time()
@@ -364,6 +369,20 @@ def main():
                             color=(0, 255, 0),  # 초록색 궤적
                             thickness=2
                         )
+                    
+                    # === 판정 완료 후 대기 시간 체크 ===
+                    current_time = time.time()
+                    if pitch_completed:
+                        # 판정 후 대기 시간이 지나면 새 투구 추적 시작
+                        if (current_time - pitch_completed_time) >= wait_for_reset:
+                            pitch_completed = False
+                            print("[추적 재개] 새 투구 대기 중...")
+                        else:
+                            # 대기 중에는 공 추적/궤적 기록 건너뜀
+                            prev_distance_to_plane1 = None
+                            prev_distance_to_plane2 = None
+                            prev_time_perf = None
+                            continue  # 다음 마커로
 
                     # 공 검출 (하이브리드: FMO + Color)
                     center, radius, detect_method = ball_detector.detect(analysis_frame)
@@ -462,13 +481,12 @@ def main():
                         alpha2 = 0.0
                         
                         if prev_time_perf is not None and prev_distance_to_plane1 is not None:
-                            # plane1 통과 감지: 양방향 통과 감지 (앞→뒤 또는 뒤→앞)
+                            # plane1 통과 감지: 정방향만 감지 (앞→뒤)
                             # 정방향: 이전 프레임에서 앞(+), 현재 프레임에서 뒤(-)
-                            # 역방향: 이전 프레임에서 뒤(-), 현재 프레임에서 앞(+)
+                            # 역방향(되돌아가는 공)은 무시
                             forward_cross = (prev_distance_to_plane1 > 0.0) and (d1 <= 0.0)
-                            backward_cross = (prev_distance_to_plane1 < 0.0) and (d1 >= 0.0)
                             
-                            if forward_cross or backward_cross:
+                            if forward_cross:
                                 crossed_p1 = True
                                 alpha1 = abs(prev_distance_to_plane1) / (abs(prev_distance_to_plane1) + abs(d1) + 1e-9)
                                 
@@ -480,11 +498,11 @@ def main():
                                     cross_point_p1 = filtered_point.copy()
                         
                         if prev_time_perf is not None and prev_distance_to_plane2 is not None:
-                            # plane2 통과 감지: 양방향 통과 감지
+                            # plane2 통과 감지: 정방향만 감지 (앞→뒤)
+                            # 역방향(되돌아가는 공)은 무시
                             forward_cross2 = (prev_distance_to_plane2 > 0.0) and (d2 <= 0.0)
-                            backward_cross2 = (prev_distance_to_plane2 < 0.0) and (d2 >= 0.0)
                             
-                            if forward_cross2 or backward_cross2:
+                            if forward_cross2:
                                 crossed_p2 = True
                                 alpha2 = abs(prev_distance_to_plane2) / (abs(prev_distance_to_plane2) + abs(d2) + 1e-9)
                                 
@@ -649,6 +667,10 @@ def main():
                             prev_ball_time = None
                             # 탐지기 연속성 리셋 (다음 공 탐지 준비)
                             ball_detector.reset()
+                            
+                            # 판정 완료 플래그 설정 (되돌아가는 공 궤적 방지)
+                            pitch_completed = True
+                            pitch_completed_time = current_time
                         
                         # === 한쪽 평면만 통과 후 옆으로 빠진 경우 → 볼 판정 ===
                         # 조건1: plane1만 통과하고 plane2를 지나침 (투수 옆 카메라)
@@ -727,6 +749,10 @@ def main():
                             prev_ball_time = None
                             # 탐지기 연속성 리셋 (다음 공 탐지 준비)
                             ball_detector.reset()
+                            
+                            # 판정 완료 플래그 설정 (되돌아가는 공 궤적 방지)
+                            pitch_completed = True
+                            pitch_completed_time = current_time
 
                         # 이전 값 업데이트
                         prev_distance_to_plane1 = d1
@@ -811,9 +837,20 @@ def main():
             t_cross_plane1 = None
             t_cross_plane2 = None
             plane1_crossed = False
+            plane2_crossed = False
             plane1_in_zone = False
+            plane2_in_zone = False
             cross_point_p1_saved = None
+            cross_point_p2_saved = None
+            first_plane_time = None
             last_judgment_time = 0.0  # 쿨다운 리셋
+            pitch_completed = False   # 판정 완료 플래그 리셋
+            pitch_completed_time = 0.0
+            # 속도 버퍼 초기화
+            frame_speed_buffer.clear()
+            prev_ball_pos_marker = None
+            prev_ball_time = None
+            ball_detector.reset()
             print("상태 초기화")
         elif is_video_mode and key & 0xFF == ord(' '):
             play_pause = not play_pause

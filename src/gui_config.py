@@ -77,12 +77,14 @@ class RecordSheetConfig:
     # 최대 표시 개수
     MAX_DISPLAY_COUNT = 50
     
-    # 색상 (RGB for Qt)
-    COLOR_STRIKE = (0, 200, 0)       # 녹색
-    COLOR_BALL = (200, 0, 0)         # 빨강
-    COLOR_ZONE_BORDER = (0, 0, 0)    # 검정
-    COLOR_GRID = (200, 200, 200)     # 밝은 회색
-    COLOR_BACKGROUND = (255, 255, 255)  # 흰색
+    # 색상 (RGB for Qt) - 다크 테마
+    COLOR_STRIKE = (0, 200, 100)       # 밝은 녹색
+    COLOR_BALL = (255, 80, 80)         # 밝은 빨강
+    COLOR_ZONE_BORDER = (100, 200, 255)  # 시안 (zone 테두리)
+    COLOR_GRID = (80, 80, 80)          # 어두운 회색
+    COLOR_BACKGROUND = (35, 35, 40)    # 어두운 배경
+    COLOR_ZONE_FILL = (40, 60, 40)     # 스트라이크존 내부 채우기
+    COLOR_TEXT = (220, 220, 220)       # 텍스트 색상
 
 
 # ==================== 스코어보드 설정 ====================

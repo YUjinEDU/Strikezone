@@ -91,8 +91,13 @@ class RecordSheet2D(QWidget):
         w = self.width() - 2 * margin
         h = self.height() - 2 * margin
         
-        # 배경
+        # 배경 (다크 테마)
         painter.fillRect(self.rect(), QColor(*record_config.COLOR_BACKGROUND))
+        
+        # 외곽 테두리
+        border_pen = QPen(QColor(60, 60, 70), 2)
+        painter.setPen(border_pen)
+        painter.drawRect(self.rect().adjusted(1, 1, -1, -1))
         
         # 스트라이크 존 경계 좌표
         zone_left, zone_top = self._world_to_widget(self.strike_x_min, self.strike_z_max)
@@ -100,11 +105,11 @@ class RecordSheet2D(QWidget):
         zone_w = zone_right - zone_left
         zone_h = zone_bottom - zone_top
         
-        # 스트라이크 존 배경 (연한 녹색)
-        zone_bg = QColor(200, 255, 200, 100)
+        # 스트라이크 존 배경 (다크 녹색 톤)
+        zone_bg = QColor(*record_config.COLOR_ZONE_FILL, 150)
         painter.fillRect(int(zone_left), int(zone_top), int(zone_w), int(zone_h), zone_bg)
         
-        # 9분할 그리드
+        # 9분할 그리드 (다크 테마)
         grid_pen = QPen(QColor(*record_config.COLOR_GRID), 1, Qt.DashLine)
         painter.setPen(grid_pen)
         
@@ -118,15 +123,15 @@ class RecordSheet2D(QWidget):
             y = zone_top + zone_h * i / 3
             painter.drawLine(int(zone_left), int(y), int(zone_right), int(y))
         
-        # 스트라이크 존 테두리
+        # 스트라이크 존 테두리 (시안색)
         zone_pen = QPen(QColor(*record_config.COLOR_ZONE_BORDER), 2)
         painter.setPen(zone_pen)
         painter.drawRect(int(zone_left), int(zone_top), int(zone_w), int(zone_h))
         
-        # 구역 번호 표시
-        font = QFont(window_config.FONT_FAMILY, 8)
+        # 구역 번호 표시 (다크 테마)
+        font = QFont(window_config.FONT_FAMILY, 9)
         painter.setFont(font)
-        painter.setPen(QColor(150, 150, 150))
+        painter.setPen(QColor(100, 100, 110))
         
         zone_positions = [
             (1, zone_left + zone_w/6, zone_top + zone_h/6),
@@ -174,11 +179,11 @@ class RecordSheet2D(QWidget):
                 text
             )
         
-        # 타이틀
+        # 타이틀 (다크 테마)
         title_font = QFont(window_config.FONT_FAMILY, 12, QFont.Bold)
         painter.setFont(title_font)
-        painter.setPen(Qt.black)
-        painter.drawText(10, 15, "투구 기록")
+        painter.setPen(QColor(*record_config.COLOR_TEXT))
+        painter.drawText(10, 18, "⚾ 투구 기록")
 
 
 class Scoreboard(QFrame):
