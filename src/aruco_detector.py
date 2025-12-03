@@ -198,6 +198,66 @@ class ArucoDetector:
         except Exception as e:
             print(f"3D 궤적 그리기 오류: {e}")
     
+    def draw_impact_point_on_plane2(self, frame, point_3d, plane_corners, rvec, tvec, 
+                                    circle_radius=15, circle_color=(255, 255, 0), 
+                                    circle_thickness=3, number_text=None, text_color=(255, 0, 0)):
+        """
+        plane2에서의 실제 통과 위치를 화면에 직접 투영하여 표시
+        카메라 위치와 관계없이 plane2에서의 정확한 위치를 보여줌
+        
+        Args:
+            frame: 그릴 프레임
+            point_3d: plane2에서의 3D 통과 좌표 (마커 좌표계)
+            plane_corners: plane2의 4개 코너 (마커 좌표계)
+            rvec, tvec: 마커 포즈
+            circle_radius: 원 반지름
+            circle_color: 원 색상 (BGR)
+            circle_thickness: 원 두께
+            number_text: 표시할 번호 (None이면 표시 안함)
+            text_color: 번호 색상 (BGR)
+        """
+        try:
+            # point_3d를 그대로 사용 (이미 plane2 통과 좌표)
+            # plane2의 Y 좌표를 강제로 적용하여 plane2 위에 있도록 함
+            p0 = plane_corners[0]
+            plane2_y = float(p0[1])  # plane2의 Y 좌표
+            
+            # point_3d의 X, Z는 유지하고 Y만 plane2로 고정
+            point_on_plane2 = np.array([
+                float(point_3d[0]),  # X 유지
+                plane2_y,             # plane2의 Y로 고정
+                float(point_3d[2])   # Z 유지
+            ], dtype=np.float32)
+            
+            # 2D 화면 좌표로 변환
+            pts_2d = self.project_points(np.array([point_on_plane2], dtype=np.float32), rvec, tvec)
+            center_2d = tuple(pts_2d[0])
+            
+            # 원 그리기
+            cv2.circle(frame, center_2d, circle_radius, circle_color, circle_thickness, cv2.LINE_AA)
+            
+            # 번호 표시
+            if number_text is not None:
+                text = str(number_text)
+                font = cv2.FONT_HERSHEY_SIMPLEX
+                font_scale = 0.48
+                font_thickness = 1
+                
+                # 텍스트 크기 계산
+                text_size = cv2.getTextSize(text, font, font_scale, font_thickness)[0]
+                text_x = center_2d[0] - text_size[0] // 2
+                text_y = center_2d[1] + text_size[1] // 2
+                
+                # 텍스트 배경 (가독성)
+                cv2.putText(frame, text, (text_x, text_y), font, font_scale, 
+                           (255, 255, 255), font_thickness + 1, cv2.LINE_AA)
+                # 텍스트
+                cv2.putText(frame, text, (text_x, text_y), font, font_scale, 
+                           text_color, font_thickness, cv2.LINE_AA)
+                
+        except Exception as e:
+            print(f"plane2 충돌 지점 그리기 오류: {e}")
+    
     def draw_impact_point_on_plane(self, frame, point_3d, plane_corners, rvec, tvec, 
                                     circle_radius=15, circle_color=(255, 255, 0), 
                                     circle_thickness=3, number_text=None, text_color=(255, 0, 0)):

@@ -11,6 +11,7 @@ import numpy as np
 import threading
 import time
 import logging
+import json
 from collections import deque
 
 from PyQt5.QtWidgets import QApplication, QMessageBox
@@ -29,10 +30,61 @@ from baseball_scoreboard import BaseballScoreboard
 from gui_config import vis_config, game_config, window_config
 from gui_app import MainWindow, VideoThread
 
+# 설정 파일 경로
+SETTINGS_FILE = os.path.join(os.path.dirname(__file__), 'user_settings.json')
+
 
 def ensure_dir(path):
     if not os.path.exists(path):
         os.makedirs(path, exist_ok=True)
+
+
+def load_user_settings():
+    """저장된 사용자 설정 불러오기"""
+    default_settings = {
+        'vis_settings': {
+            'zone': True, 'plane1': True, 'plane2': True,
+            'grid': True, 'trajectory': True, 'speed': True,
+            'scoreboard': True, 'aruco': True, 'axes': False,
+            'fmo': False
+        },
+        'game_mode_enabled': False,
+        'target_zone': None
+    }
+    
+    if os.path.exists(SETTINGS_FILE):
+        try:
+            with open(SETTINGS_FILE, 'r', encoding='utf-8') as f:
+                saved = json.load(f)
+                # 기존 설정과 병합 (새로운 키가 추가될 경우 대비)
+                for key in default_settings:
+                    if key not in saved:
+                        saved[key] = default_settings[key]
+                    elif isinstance(default_settings[key], dict):
+                        for sub_key in default_settings[key]:
+                            if sub_key not in saved[key]:
+                                saved[key][sub_key] = default_settings[key][sub_key]
+                return saved
+        except Exception as e:
+            print(f"[설정] 불러오기 실패: {e}, 기본값 사용")
+    
+    return default_settings
+
+
+def save_user_settings(vis_settings, game_mode_enabled=False, target_zone=None):
+    """사용자 설정 저장"""
+    settings = {
+        'vis_settings': vis_settings,
+        'game_mode_enabled': game_mode_enabled,
+        'target_zone': target_zone
+    }
+    
+    try:
+        with open(SETTINGS_FILE, 'w', encoding='utf-8') as f:
+            json.dump(settings, f, indent=2, ensure_ascii=False)
+        print(f"[설정] 저장 완료: {SETTINGS_FILE}")
+    except Exception as e:
+        print(f"[설정] 저장 실패: {e}")
 
 
 class PitchAnalyzer(QObject):
@@ -71,8 +123,9 @@ class PitchAnalyzer(QObject):
         self.ball_zone_corners2[:, 1] += ZONE_DEPTH
         self.box_corners_3d = self.aruco_detector.get_box_corners_3d(BOX_MIN, BOX_MAX)
         
-        # 평면 법선 방향
-        self.desired_depth_axis = np.array([0, 1, 0], dtype=np.float32)
+        # 평면 법선 방향: 투수가 -Y에 있으므로 공이 -Y→+Y로 날아옴
+        # 따라서 깊이 축을 -Y로 설정해야 d가 양수→음수로 변화함
+        self.desired_depth_axis = np.array([0, -1, 0], dtype=np.float32)
         
         # 상태 변수 초기화
         self._reset_state()
@@ -83,21 +136,28 @@ class PitchAnalyzer(QObject):
         # 기록된 투구들
         self.impact_points = []
         
+        # 사용자 설정 불러오기
+        user_settings = load_user_settings()
+        
         # 시각화 설정
-        self.vis_settings = {
+        self.vis_settings = user_settings.get('vis_settings', {
             'zone': True, 'plane1': True, 'plane2': True,
             'grid': True, 'trajectory': True, 'speed': True,
             'scoreboard': True, 'aruco': True, 'axes': False,
             'fmo': False
-        }
+        })
         
         # 게임 모드 설정
-        self.game_mode_enabled = False
-        self.target_zone = None
+        self.game_mode_enabled = user_settings.get('game_mode_enabled', False)
+        self.target_zone = user_settings.get('target_zone', None)
         
         # 왜곡 보정
         self.undistort_map1 = None
         self.undistort_map2 = None
+    
+    def save_settings(self):
+        """현재 설정 저장"""
+        save_user_settings(self.vis_settings, self.game_mode_enabled, self.target_zone)
         
     def _reset_state(self):
         """상태 초기화"""
@@ -238,11 +298,14 @@ class PitchAnalyzer(QObject):
                 self.scoreboard.draw(overlay_frame, self.aruco_detector, rvec, tvec)
             
             # 기록된 투구 지점 표시 (ball_markers 옵션)
+            # plane2에서의 실제 통과 위치를 표시 (카메라 위치와 무관하게 정확한 위치)
             if self.vis_settings.get('ball_markers', True):
                 for impact in self.impact_points:
-                    self.aruco_detector.draw_impact_point_on_plane(
+                    # plane2 좌표를 직접 투영 (plane2_point 사용)
+                    point_3d = impact.get('plane2_point', impact['point_3d'])
+                    self.aruco_detector.draw_impact_point_on_plane2(
                         overlay_frame,
-                        impact['point_3d'],
+                        point_3d,
                         self.ball_zone_corners2,
                         rvec, tvec,
                         circle_radius=12,
@@ -289,9 +352,10 @@ class PitchAnalyzer(QObject):
                 # ArUco 마커 기준 깊이 (tvec[2])를 참조하여 보정
                 marker_depth = float(tvec[2][0]) if tvec is not None else 1.0
                 
-                # 깊이 보정: 마커 깊이 근처로 제한 (마커 ±1m 범위)
+                # 깊이 보정: 투수 마운드 거리까지 확장 (마커 앞 1m ~ 뒤 20m)
+                # 투수 마운드는 약 18.44m 뒤에 있으므로 충분한 범위 확보
                 min_depth = max(0.1, marker_depth - 1.0)
-                max_depth = marker_depth + 1.0
+                max_depth = marker_depth + 20.0  # 1.0 → 20.0으로 확장
                 estimated_Z = np.clip(estimated_Z_ball, min_depth, max_depth)
                 
                 # 카메라 좌표계 3D 복원
@@ -478,6 +542,9 @@ class PitchAnalyzer(QObject):
             filtered_point, p2_0, p2_1, p2_2, desired_dir=self.desired_depth_axis
         )
         
+        # [DEBUG] 좌표계 확인용 - 필요시 주석 해제
+        # print(f"[좌표] Y={filtered_point[1]:.3f}m | d1(plane1)={d1:.3f} | d2(plane2)={d2:.3f} | plane1_Y=0 | plane2_Y={ZONE_DEPTH:.2f}")
+        
         now_perf = time.perf_counter()
         current_time = time.time()
         
@@ -561,8 +628,9 @@ class PitchAnalyzer(QObject):
         cooldown_passed = (current_time - self.last_judgment_time) >= self.judgment_cooldown
         
         if self.plane1_crossed and self.plane2_crossed and cooldown_passed:
-            # 스트라이크 조건: plane1 AND plane2 모두 스트라이크존 내부 통과
-            is_strike = self.plane1_in_zone and self.plane2_in_zone
+            # 스트라이크 조건: plane1 OR plane2 중 하나라도 스트라이크존 내부 통과
+            # (야구 규칙: 공이 스트라이크존의 일부라도 통과하면 스트라이크)
+            is_strike = self.plane1_in_zone or self.plane2_in_zone
             
             print(f"[판정] plane1(존내부:{self.plane1_in_zone}), plane2(존내부:{self.plane2_in_zone})")
             print(f"[판정] 결과: {'스트라이크' if is_strike else '볼'}")
@@ -650,7 +718,14 @@ class PitchAnalyzer(QObject):
         # === 한쪽 평면만 통과 후 옆으로 빠진 경우 → 볼 판정 ===
         # 단, 유효한 궤적 데이터가 있을 때만
         one_plane_only = (self.plane1_crossed and not self.plane2_crossed) or (self.plane2_crossed and not self.plane1_crossed)
-        passed_through = (d1 < -0.05) or (d2 < -0.05)
+        # plane1만 통과한 경우: d2가 음수가 되어야 함 (plane2까지 도달 후 판정)
+        # plane2만 통과한 경우: d1이 음수가 되어야 함 (plane1까지 도달 후 판정)
+        if self.plane1_crossed and not self.plane2_crossed:
+            passed_through = (d2 < -0.05)  # plane2를 확실히 지나갔는지 확인
+        elif self.plane2_crossed and not self.plane1_crossed:
+            passed_through = (d1 < -0.05)  # plane1을 확실히 지나갔는지 확인
+        else:
+            passed_through = False
         has_valid_trajectory = len(self.traj_x) >= 3  # 최소 3개 이상의 궤적 포인트
         
         if one_plane_only and passed_through and cooldown_passed and has_valid_trajectory:
@@ -663,9 +738,15 @@ class PitchAnalyzer(QObject):
             self.scoreboard.add_ball()
             
             point_on_plane2 = filtered_point.copy()
+            # plane2 통과 좌표가 있으면 사용, 없으면 plane1 좌표 사용
+            plane2_point = self.cross_point_p2_saved.copy() if self.cross_point_p2_saved is not None else (
+                self.cross_point_p1_saved.copy() if self.cross_point_p1_saved is not None else filtered_point.copy()
+            )
+            
             pitch_number = len(self.impact_points) + 1
             self.impact_points.append({
                 'point_3d': point_on_plane2,
+                'plane2_point': plane2_point,
                 'number': pitch_number
             })
             
@@ -754,6 +835,23 @@ class IntegratedMainWindow(MainWindow):
         # 시그널 연결
         self._connect_analyzer_signals()
         
+        # 저장된 설정을 UI에 반영
+        self._apply_saved_settings()
+        
+    def _apply_saved_settings(self):
+        """저장된 설정을 UI에 반영"""
+        # 시각화 설정을 SettingsDialog에 반영
+        saved_vis = self.pitch_analyzer.vis_settings
+        for key, value in saved_vis.items():
+            if key in self.settings_dialog.vis_checkboxes:
+                self.settings_dialog.vis_checkboxes[key].setChecked(value)
+        
+        # 게임 모드 설정 반영
+        if self.pitch_analyzer.game_mode_enabled:
+            self.game_mode_enabled = True
+            self.target_zone = self.pitch_analyzer.target_zone
+            self.game_widget.game_mode_cb.setChecked(True)
+        
     def _connect_analyzer_signals(self):
         """분석기 시그널 연결"""
         self.pitch_analyzer.pitch_detected.connect(self._on_pitch_detected)
@@ -809,6 +907,15 @@ class IntegratedMainWindow(MainWindow):
     def _on_speed_updated(self, speed):
         """구속 업데이트"""
         self.statusBar.showMessage(f"구속: {speed:.1f} km/h")
+    
+    def closeEvent(self, event):
+        """윈도우 종료 시 설정 저장"""
+        # 현재 설정 저장
+        self.pitch_analyzer.save_settings()
+        print("[종료] 사용자 설정 저장 완료")
+        
+        # 부모 클래스 closeEvent 호출
+        super().closeEvent(event)
 
 
 def main():

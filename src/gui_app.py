@@ -968,8 +968,9 @@ class MainWindow(QMainWindow):
     def _on_pitch_detected(self, pitch_data):
         """투구 감지"""
         is_strike = pitch_data.get('is_strike', False)
-        x = pitch_data.get('x', 0)
-        z = pitch_data.get('z', 0)
+        # 마커는 판정면 교차점 우선 사용(없으면 원래 x/z)
+        x = pitch_data.get('marker_x', pitch_data.get('x', 0))
+        z = pitch_data.get('marker_z', pitch_data.get('z', 0))
         speed = pitch_data.get('speed', 0)
         trajectory = pitch_data.get('trajectory', None)  # 궤적 데이터
         

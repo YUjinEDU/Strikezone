@@ -48,8 +48,10 @@ class RecordSheet2D(QWidget):
         self.zone_z_max = 0.9
         
         # 깊이 범위 (Y축 - 투수→포수 방향)
-        self.depth_y_min = -0.3  # plane1 앞쪽
-        self.depth_y_max = 0.5   # 멀리서 날아오는 쪽
+        # 실제 데이터: Y가 음수일수록 투수 방향(멀리), Y가 0~0.2 근처가 포수/판정면
+        # 로그에서 -2.7m까지 나와 여유 있게 확장
+        self.depth_y_min = -3.0  # 투수 방향 (멀리)
+        self.depth_y_max = 0.4   # 포수 방향 (plane2=0.2 기준 여유)
         
         # 실제 스트라이크 존 경계 (변경 없음)
         self.strike_x_min = -0.15
@@ -92,10 +94,18 @@ class RecordSheet2D(QWidget):
             n = min(self.trajectory_points_count, len(trajectory))
             for pt in trajectory[-n:]:
                 if len(pt) >= 3:
-                    # 궤적 점도 유효 범위로 클램핑
-                    tx = max(self.zone_x_min, min(self.zone_x_max, pt[0]))
-                    tz = max(self.zone_z_min, min(self.zone_z_max, pt[2]))
-                    traj_3d.append((tx, pt[1], tz))  # x, y, z (y는 깊이)
+                    tx, ty, tz = pt[0], pt[1], pt[2]
+                    
+                    # [중요] 땅(Z=0) 밑으로 가는 궤적은 0으로 클램핑
+                    if tz < 0:
+                        tz = 0
+                    
+                    # X는 약간의 여유를 두고 클램핑 (궤적이 존 밖으로 나갈 수 있음)
+                    tx = max(self.zone_x_min - 0.1, min(self.zone_x_max + 0.1, tx))
+                    # Z는 화면 범위로 클램핑
+                    tz = max(self.zone_z_min, min(self.zone_z_max, tz))
+                    
+                    traj_3d.append((tx, ty, tz))  # x, y, z (y는 깊이)
                     
         self.records.append((x_clamped, z_clamped, is_strike, number, speed, traj_3d))
         
@@ -185,6 +195,67 @@ class RecordSheet2D(QWidget):
         wy = margin + offset_y + (1 - nz) * draw_h
         
         return wx, wy
+    
+    def _perspective_transform(self, x, y, z):
+        """3D 월드 좌표를 원근법 적용하여 2D 위젯 좌표로 변환
+        
+        투수 시점에서 캐처 방향을 바라보는 뷰:
+        - X: 좌우 위치
+        - Y: 깊이 (Y가 음수일수록 투수 방향/멀리, Y가 0에 가까울수록 포수 방향/가까이)
+        - Z: 높이
+        
+        원근 투영:
+        - 소실점: 화면 상단 중앙 (투수 방향, Y가 작은 쪽)
+        - 스트라이크 존: 화면 하단 (포수 방향, Y가 큰 쪽)
+        - Y가 작을수록(음수/투수쪽) 소실점에 가깝고 작게
+        - Y가 클수록(0에 가까울수록/포수쪽) 스트라이크 존 원래 위치에 크게
+        """
+        margin = record_config.MARGIN
+        w = self.width()
+        h = self.height()
+        
+        # 스트라이크 존 중심 좌표 (위젯 좌표계)
+        zone_center_x, zone_center_y = self._world_to_widget(
+            (self.strike_x_min + self.strike_x_max) / 2,
+            (self.strike_z_min + self.strike_z_max) / 2
+        )
+        
+        # 소실점 (화면 상단 중앙 - 투수 방향)
+        vanishing_x = w / 2
+        vanishing_y = margin * 0.5  # 상단 마진 부근
+        
+        # Y 정규화: 0 = 투수쪽(멀리/소실점), 1 = 포수쪽(가까이/스트라이크존)
+        # 실제 데이터에서 Y는 음수(투수)→0(포수) 방향으로 증가
+        # depth_y_min=-3.0(투수/멀리), depth_y_max=0.4(포수/가까이)
+        depth_range = self.depth_y_max - self.depth_y_min
+        if depth_range < 0.01:
+            depth_ratio = 1.0
+        else:
+            # 범위를 벗어난 Y는 클램프 후 정규화 (투수쪽=0, 포수쪽=1)
+            y_clamped = max(self.depth_y_min, min(self.depth_y_max, y))
+            depth_ratio = (y_clamped - self.depth_y_min) / depth_range
+        
+        # 원근 스케일: 가까울수록(depth_ratio=1) 크게, 멀수록(depth_ratio=0) 작게
+        # 비선형 스케일로 더 자연스러운 원근감
+        perspective_scale = 0.15 + 0.85 * (depth_ratio ** 0.7)
+        
+        # 기본 위젯 좌표 계산 (정면 시점)
+        base_wx, base_wy = self._world_to_widget(x, z)
+        
+        # 스트라이크 존 중심 기준으로 스케일 적용
+        scaled_x = zone_center_x + (base_wx - zone_center_x) * perspective_scale
+        scaled_y_offset = (base_wy - zone_center_y) * perspective_scale
+        
+        # 소실점과 스트라이크 존 사이를 보간
+        # depth_ratio만 쓰면 먼 공이 지나치게 위로 몰리므로 최소 가중치(0.35)를 준다.
+        mix_ratio = 0.35 + 0.65 * depth_ratio  # 0.35~1.0
+        final_x = vanishing_x + (scaled_x - vanishing_x) * mix_ratio
+
+        # Y 좌표: 소실점에서 스트라이크 존 위치까지 보간
+        base_y_at_zone = zone_center_y + scaled_y_offset
+        final_y = vanishing_y + (base_y_at_zone - vanishing_y) * mix_ratio
+        
+        return final_x, final_y, perspective_scale
         
     def paintEvent(self, event):
         """그리기 이벤트"""
@@ -202,6 +273,9 @@ class RecordSheet2D(QWidget):
         border_pen = QPen(QColor(60, 60, 70), 2)
         painter.setPen(border_pen)
         painter.drawRect(self.rect().adjusted(1, 1, -1, -1))
+        
+        # === 원근 가이드라인 (소실점에서 스트라이크 존으로) ===
+        self._draw_perspective_guides(painter)
         
         # 스트라이크 존 경계 좌표
         zone_left, zone_top = self._world_to_widget(self.strike_x_min, self.strike_z_max)
@@ -283,7 +357,8 @@ class RecordSheet2D(QWidget):
                 self._draw_trajectory_mlb(painter, trajectory, is_strike, is_selected, anim_progress)
             
             # 마커는 항상 그리기 (모든 공의 위치 표시)
-            self._draw_marker_mlb(painter, x, z, is_strike, number, is_selected, show_trajectory)
+            marker_y = trajectory[-1][1] if trajectory else 0.0
+            self._draw_marker_mlb(painter, x, z, marker_y, is_strike, number, is_selected, show_trajectory)
         
         # 타이틀 (다크 테마)
         title_font = QFont(window_config.FONT_FAMILY, 12, QFont.Bold)
@@ -312,6 +387,60 @@ class RecordSheet2D(QWidget):
         painter.setPen(target_pen)
         painter.drawRect(int(x), int(y), int(cell_w), int(cell_h))
     
+    def _draw_perspective_guides(self, painter):
+        """원근 가이드라인 그리기 - 3D 깊이감을 위한 시각적 참조선"""
+        margin = record_config.MARGIN
+        w = self.width()
+        h = self.height()
+        
+        # 소실점 (화면 상단 중앙)
+        vanishing_x = w / 2
+        vanishing_y = margin * 0.5
+        
+        # 스트라이크 존 모서리 좌표
+        zone_left, zone_top = self._world_to_widget(self.strike_x_min, self.strike_z_max)
+        zone_right, zone_bottom = self._world_to_widget(self.strike_x_max, self.strike_z_min)
+        
+        # 가이드라인 색상 (매우 연한 색상)
+        guide_color = QColor(80, 80, 100, 40)
+        guide_pen = QPen(guide_color, 1, Qt.DotLine)
+        painter.setPen(guide_pen)
+        
+        # 소실점에서 스트라이크 존 4개 모서리로 가이드라인
+        corners = [
+            (zone_left, zone_top),      # 좌상
+            (zone_right, zone_top),     # 우상
+            (zone_left, zone_bottom),   # 좌하
+            (zone_right, zone_bottom),  # 우하
+        ]
+        
+        for cx, cy in corners:
+            painter.drawLine(int(vanishing_x), int(vanishing_y), int(cx), int(cy))
+        
+        # 중간 깊이에 그리드 라인 (3D 바닥/천장 느낌)
+        # 여러 깊이 레벨에 수평선 그리기
+        for depth_level in [0.2, 0.4, 0.6, 0.8]:
+            # 각 깊이에서의 좌우 끝점 계산
+            left_x = vanishing_x + (zone_left - vanishing_x) * depth_level
+            right_x = vanishing_x + (zone_right - vanishing_x) * depth_level
+            line_y = vanishing_y + (zone_bottom - vanishing_y) * depth_level
+            
+            # 수평 가이드라인 (점점 더 넓어지는)
+            alpha = int(20 + 30 * depth_level)
+            depth_guide_color = QColor(80, 80, 100, alpha)
+            depth_pen = QPen(depth_guide_color, 1, Qt.DotLine)
+            painter.setPen(depth_pen)
+            painter.drawLine(int(left_x), int(line_y), int(right_x), int(line_y))
+        
+        # 소실점 표시 (작은 십자)
+        crosshair_size = 5
+        crosshair_color = QColor(100, 100, 120, 60)
+        painter.setPen(QPen(crosshair_color, 1))
+        painter.drawLine(int(vanishing_x - crosshair_size), int(vanishing_y),
+                        int(vanishing_x + crosshair_size), int(vanishing_y))
+        painter.drawLine(int(vanishing_x), int(vanishing_y - crosshair_size),
+                        int(vanishing_x), int(vanishing_y + crosshair_size))
+
     def _depth_to_visual(self, y):
         """깊이(Y)를 시각적 속성으로 변환
         Y가 클수록(멀수록) = 더 작고, 더 투명
@@ -479,17 +608,46 @@ class RecordSheet2D(QWidget):
         return points
     
     def _draw_trajectory_mlb(self, painter, trajectory, is_strike, is_selected, animation_progress=1.0):
-        """MLB 스타일 부드러운 곡선 궤적 그리기
+        """MLB 스타일 부드러운 곡선 궤적 그리기 (원근법 적용)
         
+        - 원근 투영으로 3D 입체감 표현
+        - 소실점: 화면 상단 중앙 (투수 방향)
+        - 스트라이크 존: 화면 하단 (캐처 방향)
+        - 깊이에 따른 크기/투명도 변화
         - Catmull-Rom 스플라인으로 부드러운 곡선
-        - 그라데이션 색상 (시작→끝)
-        - 글로우 효과
+        - 궤적 스무딩으로 노이즈 제거
         - 애니메이션 지원
-        - 정면 시점 (X=좌우, Z=높이) - 마커와 동일한 좌표계
-        - Y(깊이)는 선 굵기/투명도로 표현
         """
         if len(trajectory) < 2:
             return
+        
+        # [노이즈 제거] 궤적 스무딩 (이동 평균)
+        # 지그재그 현상을 줄이기 위해 좌표를 부드럽게 만듦
+        smoothed_traj = []
+        if len(trajectory) >= 3:
+            # 첫 점은 그대로
+            smoothed_traj.append(trajectory[0])
+            
+            for i in range(1, len(trajectory) - 1):
+                # 이전, 현재, 다음 점의 평균
+                prev_p = trajectory[i-1]
+                curr_p = trajectory[i]
+                next_p = trajectory[i+1]
+                
+                avg_x = (prev_p[0] + curr_p[0] + next_p[0]) / 3
+                avg_y = (prev_p[1] + curr_p[1] + next_p[1]) / 3
+                avg_z = (prev_p[2] + curr_p[2] + next_p[2]) / 3
+                
+                # Z가 0보다 작으면 0으로 클램핑
+                if avg_z < 0:
+                    avg_z = 0
+                
+                smoothed_traj.append((avg_x, avg_y, avg_z))
+            
+            # 마지막 점은 그대로
+            smoothed_traj.append(trajectory[-1])
+        else:
+            smoothed_traj = list(trajectory)
         
         # 색상 선택
         if is_selected:
@@ -502,66 +660,101 @@ class RecordSheet2D(QWidget):
         start_color = QColor(*colors['start'])
         end_color = QColor(*colors['end'])
         
-        # 위젯 좌표로 변환 (정면 시점: X=좌우, Z=높이) - 마커와 동일
+        # 원근 변환된 위젯 좌표로 변환
         widget_points = []
-        depth_values = []  # Y값 저장 (깊이 효과용)
+        scale_values = []  # 깊이에 따른 스케일 저장
         
-        for x, y, z in trajectory:
-            # 정면 시점: X=좌우, Z=높이 (마커와 동일한 좌표계!)
-            wx, wz = self._world_to_widget(x, z)
-            widget_points.append((wx, wz))
-            depth_values.append(y)
+        for x, y, z in smoothed_traj:
+            # Z가 0보다 작으면(땅 밑) 0으로 클램핑
+            if z < 0:
+                z = 0
+            
+            # 원근 투영 적용
+            wx, wy, scale = self._perspective_transform(x, y, z)
+            widget_points.append((wx, wy))
+            scale_values.append(scale)
         
         # Catmull-Rom 스플라인으로 부드러운 곡선 점 생성
         smooth_points = []
+        smooth_scales = []
+        
         if len(widget_points) >= 4:
             for i in range(len(widget_points) - 3):
                 p0, p1, p2, p3 = widget_points[i:i+4]
+                s0, s1, s2, s3 = scale_values[i:i+4]
+                
                 segment_points = self._catmull_rom_spline(p0, p1, p2, p3, 8)
                 smooth_points.extend(segment_points)
+                
+                # 스케일도 보간
+                for j in range(8):
+                    t = j / 7
+                    interp_scale = s1 * (1-t) + s2 * t
+                    smooth_scales.append(interp_scale)
+            
             # 마지막 점 추가
             smooth_points.append(widget_points[-1])
+            smooth_scales.append(scale_values[-1])
         else:
             smooth_points = widget_points
+            smooth_scales = scale_values
         
         # 애니메이션 진행도에 따라 표시할 점 수 결정
         total_points = len(smooth_points)
         visible_count = max(2, int(total_points * animation_progress))
         visible_points = smooth_points[:visible_count]
+        visible_scales = smooth_scales[:visible_count]
         
         if len(visible_points) < 2:
             return
         
-        # QPainterPath 생성
-        path = QPainterPath()
-        path.moveTo(visible_points[0][0], visible_points[0][1])
-        
-        for i in range(1, len(visible_points)):
-            path.lineTo(visible_points[i][0], visible_points[i][1])
-        
-        # 글로우 효과 (선택된 경우)
-        if is_selected:
-            glow_color = QColor(end_color)
-            glow_color.setAlpha(60)
-            glow_pen = QPen(glow_color, record_config.TRAJECTORY_GLOW_WIDTH)
-            glow_pen.setCapStyle(Qt.RoundCap)
-            glow_pen.setJoinStyle(Qt.RoundJoin)
-            painter.setPen(glow_pen)
-            painter.drawPath(path)
-        
-        # 그라데이션 스트로크
-        gradient = QLinearGradient(
-            visible_points[0][0], visible_points[0][1],
-            visible_points[-1][0], visible_points[-1][1]
-        )
-        gradient.setColorAt(0, start_color)
-        gradient.setColorAt(1, end_color)
-        
-        pen = QPen(QBrush(gradient), record_config.TRAJECTORY_WIDTH)
-        pen.setCapStyle(Qt.RoundCap)
-        pen.setJoinStyle(Qt.RoundJoin)
-        painter.setPen(pen)
-        painter.drawPath(path)
+        # 선분별로 그리기 (깊이에 따른 굵기/투명도 변화)
+        for i in range(len(visible_points) - 1):
+            p1 = visible_points[i]
+            p2 = visible_points[i + 1]
+            
+            # 진행도 (0~1)
+            progress = i / max(1, len(visible_points) - 1)
+            
+            # 깊이 기반 스케일 (평균)
+            avg_scale = (visible_scales[i] + visible_scales[min(i+1, len(visible_scales)-1)]) / 2
+            
+            # 색상 보간 (시작→끝)
+            r = int(start_color.red() + (end_color.red() - start_color.red()) * progress)
+            g = int(start_color.green() + (end_color.green() - start_color.green()) * progress)
+            b = int(start_color.blue() + (end_color.blue() - start_color.blue()) * progress)
+            
+            # 깊이에 따른 투명도 (멀면 더 투명)
+            base_alpha = 100 + int(155 * avg_scale)  # 100~255
+            
+            # 선 굵기 (깊이에 따라 변화)
+            base_width = record_config.TRAJECTORY_WIDTH if is_selected else record_config.TRAJECTORY_WIDTH - 1
+            line_width = max(1, int(base_width * avg_scale))
+            
+            # 글로우 효과 (선택된 경우)
+            if is_selected:
+                glow_color = QColor(r, g, b, int(base_alpha * 0.3))
+                glow_width = int(line_width * 2.5)
+                glow_pen = QPen(glow_color, glow_width)
+                glow_pen.setCapStyle(Qt.RoundCap)
+                painter.setPen(glow_pen)
+                painter.drawLine(int(p1[0]), int(p1[1]), int(p2[0]), int(p2[1]))
+            
+            # 메인 라인
+            line_color = QColor(r, g, b, base_alpha)
+            pen = QPen(line_color, line_width)
+            pen.setCapStyle(Qt.RoundCap)
+            painter.setPen(pen)
+            painter.drawLine(int(p1[0]), int(p1[1]), int(p2[0]), int(p2[1]))
+            
+            # 깊이 마커 (매 N번째 점마다, 선택된 궤적만)
+            if is_selected and i % 5 == 0:
+                marker_radius = max(2, int(4 * avg_scale))
+                marker_color = QColor(r, g, b, int(base_alpha * 0.6))
+                painter.setPen(Qt.NoPen)
+                painter.setBrush(QBrush(marker_color))
+                painter.drawEllipse(int(p1[0] - marker_radius), int(p1[1] - marker_radius),
+                                   marker_radius * 2, marker_radius * 2)
         
         # 궤적 끝점에 화살표 효과 (애니메이션 완료 시)
         if animation_progress >= 0.95 and len(visible_points) >= 2:
@@ -597,9 +790,9 @@ class RecordSheet2D(QWidget):
         arrow_path.closeSubpath()
         painter.drawPath(arrow_path)
     
-    def _draw_marker_mlb(self, painter, x, z, is_strike, number, is_selected, has_trajectory):
+    def _draw_marker_mlb(self, painter, x, z, y, is_strike, number, is_selected, has_trajectory):
         """MLB 스타일 마커 그리기 (3D 효과 + 그림자)"""
-        wx, wy = self._world_to_widget(x, z)
+        wx, wy, _ = self._perspective_transform(x, y, z)
         
         # 기본 색상
         if is_strike:
