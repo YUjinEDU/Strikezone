@@ -216,7 +216,6 @@ class VisualizationSettingsDialog(QDialog):
             ("scoreboard", "스코어보드", True),
             ("aruco", "ArUco 마커", True),
             ("axes", "좌표축", False),
-            ("fmo", "FMO 모드", False),
         ]
         
         for key, label, default in misc_options:
@@ -227,6 +226,30 @@ class VisualizationSettingsDialog(QDialog):
             self.vis_checkboxes[key] = cb
         
         layout.addWidget(misc_group)
+        
+        # === 탐지 방법 그룹 (FMO/BGS/ROI) ===
+        detect_group = QGroupBox("🎯 공 탐지 방법")
+        detect_layout = QVBoxLayout(detect_group)
+        
+        detect_options = [
+            ("fmo", "FMO (빠른 공 잔상)", False),
+            ("bgs", "BGS (배경 차분)", False),
+            ("roi", "ROI (영역 추적)", False),
+        ]
+        
+        for key, label, default in detect_options:
+            cb = QCheckBox(label)
+            cb.setChecked(default)
+            cb.stateChanged.connect(self._on_setting_changed)
+            detect_layout.addWidget(cb)
+            self.vis_checkboxes[key] = cb
+        
+        # 도움말 레이블
+        help_label = QLabel("💡 색상 탐지가 기본입니다")
+        help_label.setStyleSheet("color: #888; font-size: 10px;")
+        detect_layout.addWidget(help_label)
+        
+        layout.addWidget(detect_group)
         
         layout.addStretch()
         
@@ -615,7 +638,7 @@ class MainWindow(QMainWindow):
             'zone': True, 'plane1': True, 'plane2': True,
             'grid': True, 'trajectory': True, 'speed': True,
             'scoreboard': True, 'aruco': True, 'axes': False,
-            'fmo': False
+            'fmo': False, 'bgs': False, 'roi': False
         }
         self.game_mode_enabled = False
         self.current_frame = None

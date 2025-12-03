@@ -1,7 +1,7 @@
 {
   "vis_settings": {
-    "zone": false,
-    "plane1": false,
+    "zone": true,
+    "plane1": true,
     "plane2": true,
     "grid": true,
     "trajectory": true,
@@ -10,8 +10,10 @@
     "scoreboard": false,
     "aruco": true,
     "axes": true,
-    "fmo": false
+    "fmo": true,
+    "bgs": true,
+    "roi": true
   },
-  "game_mode_enabled": false,
-  "target_zone": null
+  "game_mode_enabled": true,
+  "target_zone": 3
 }

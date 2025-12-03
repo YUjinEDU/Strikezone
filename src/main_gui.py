@@ -46,7 +46,7 @@ def load_user_settings():
             'zone': True, 'plane1': True, 'plane2': True,
             'grid': True, 'trajectory': True, 'speed': True,
             'scoreboard': True, 'aruco': True, 'axes': False,
-            'fmo': False
+            'fmo': False, 'bgs': False, 'roi': False
         },
         'game_mode_enabled': False,
         'target_zone': None
@@ -210,6 +210,16 @@ class PitchAnalyzer(QObject):
         fmo_enabled = settings.get('fmo', False)
         if hasattr(self, 'ball_detector') and self.ball_detector is not None:
             self.ball_detector.fmo_enabled = fmo_enabled
+        
+        # BGS (Background Subtraction) 설정 전달
+        bgs_enabled = settings.get('bgs', False)
+        if hasattr(self, 'ball_detector') and self.ball_detector is not None:
+            self.ball_detector.bgs_enabled = bgs_enabled
+        
+        # ROI 추적 설정 전달
+        roi_enabled = settings.get('roi', False)
+        if hasattr(self, 'ball_detector') and self.ball_detector is not None:
+            self.ball_detector.roi_enabled = roi_enabled
     
     def update_ball_color(self, color_name):
         """공 색상 변경"""

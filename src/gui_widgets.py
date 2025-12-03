@@ -350,11 +350,11 @@ class RecordSheet2D(QWidget):
             else:
                 show_trajectory = is_latest
             
-            # 궤적 그리기
-            if trajectory and len(trajectory) >= 2 and show_trajectory:
-                # 애니메이션 진행도 적용
-                anim_progress = self.animation_progress if (is_latest and not self.selected_pitch) else 1.0
-                self._draw_trajectory_mlb(painter, trajectory, is_strike, is_selected, anim_progress)
+            # [임시 비활성화] 궤적 그리기
+            # if trajectory and len(trajectory) >= 2 and show_trajectory:
+            #     # 애니메이션 진행도 적용
+            #     anim_progress = self.animation_progress if (is_latest and not self.selected_pitch) else 1.0
+            #     self._draw_trajectory_mlb(painter, trajectory, is_strike, is_selected, anim_progress)
             
             # 마커는 항상 그리기 (모든 공의 위치 표시)
             marker_y = trajectory[-1][1] if trajectory else 0.0

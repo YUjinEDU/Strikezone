@@ -53,12 +53,24 @@ BALL_COLOR_PRESETS = {
 - Z: 높이(+는 위)
 """
 
+# ==================== KBO 스트라이크존 규격 ====================
+# 타자 신장 설정 (cm)
+BATTER_HEIGHT_CM = 175
+
+# KBO 규격 계산:
+# - 좌우: 홈플레이트 중앙 기준 양옆 각 2cm 추가 = 총 47.18cm (±23.59cm)
+# - 상단: 신장 × 55.75%
+# - 하단: 신장 × 27.04%
+ZONE_HALF_WIDTH = 0.2359  # 47.18cm / 2 = 23.59cm
+ZONE_TOP = BATTER_HEIGHT_CM * 0.5575 / 100  # 신장의 55.75% (m)
+ZONE_BOTTOM = BATTER_HEIGHT_CM * 0.2704 / 100  # 신장의 27.04% (m)
+
 # 스트라이크존(앞 판정면, y=0 평면) 코너들: [x, y, z]
 STRIKE_ZONE_CORNERS = np.array([
-    [-0.15, 0.00, 0.25],  # Bottom-left
-    [ 0.15, 0.00, 0.25],  # Bottom-right
-    [ 0.15, 0.00, 0.65],  # Top-right
-    [-0.15, 0.00, 0.65],  # Top-left
+    [-ZONE_HALF_WIDTH, 0.00, ZONE_BOTTOM],  # Bottom-left
+    [ ZONE_HALF_WIDTH, 0.00, ZONE_BOTTOM],  # Bottom-right
+    [ ZONE_HALF_WIDTH, 0.00, ZONE_TOP],     # Top-right
+    [-ZONE_HALF_WIDTH, 0.00, ZONE_TOP],     # Top-left
 ], dtype=np.float32)
 
 # 판정용/시각화용 폴리곤(앞면) - 위와 동일
