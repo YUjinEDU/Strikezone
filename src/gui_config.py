@@ -65,10 +65,10 @@ class GameModeConfig:
 class RecordSheetConfig:
     """2D 기록지 설정 클래스"""
     
-    # 기록지 크기
-    WIDTH = 300
-    HEIGHT = 300
-    MARGIN = 20
+    # 기록지 크기 (확대)
+    WIDTH = 350
+    HEIGHT = 350
+    MARGIN = 25
     
     # 마커 크기
     MARKER_RADIUS = 8
@@ -85,6 +85,31 @@ class RecordSheetConfig:
     COLOR_BACKGROUND = (35, 35, 40)    # 어두운 배경
     COLOR_ZONE_FILL = (40, 60, 40)     # 스트라이크존 내부 채우기
     COLOR_TEXT = (220, 220, 220)       # 텍스트 색상
+    
+    # MLB 스타일 궤적 색상 (RGB)
+    TRAJECTORY_COLORS = {
+        'strike': {
+            'start': (100, 150, 255),   # 연한 파랑 (시작점)
+            'end': (0, 100, 255),       # 진한 파랑 (끝점)
+        },
+        'ball': {
+            'start': (255, 150, 150),   # 연한 빨강 (시작점)
+            'end': (255, 50, 50),       # 진한 빨강 (끝점)
+        },
+        'selected': {
+            'start': (255, 220, 100),   # 연한 노랑 (시작점)
+            'end': (255, 180, 0),       # 진한 노랑 (끝점)
+        }
+    }
+    
+    # 궤적 설정
+    TRAJECTORY_WIDTH = 4              # 궤적 두께
+    TRAJECTORY_GLOW_WIDTH = 8         # 글로우 효과 두께
+    TRAJECTORY_ANIMATION_SPEED = 50   # 애니메이션 속도 (ms)
+    
+    # 마커 그림자 설정
+    MARKER_SHADOW_OFFSET = 2
+    MARKER_SHADOW_ALPHA = 80
 
 
 # ==================== 스코어보드 설정 ====================

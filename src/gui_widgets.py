@@ -6,12 +6,13 @@ GUI 위젯 모듈
 
 from PyQt5.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QGridLayout,
-    QLabel, QFrame, QSizePolicy
+    QLabel, QFrame, QSizePolicy, QListWidget, QListWidgetItem,
+    QScrollArea
 )
-from PyQt5.QtCore import Qt, QRectF, QPointF, pyqtSignal
+from PyQt5.QtCore import Qt, QRectF, QPointF, pyqtSignal, QTimer, QPropertyAnimation, QVariantAnimation
 from PyQt5.QtGui import (
     QPainter, QPen, QBrush, QColor, QFont, 
-    QPainterPath, QLinearGradient
+    QPainterPath, QLinearGradient, QRadialGradient
 )
 import math
 
@@ -23,62 +24,165 @@ from gui_config import (
 
 class RecordSheet2D(QWidget):
     """
-    2D 기록지 위젯
-    스트라이크 존을 위에서 본 시점으로 표시
-    공의 위치를 마커로 표시 (스트라이크: 녹색, 볼: 빨강)
+    2D 기록지 위젯 (정면 시점 - 야구 중계 스타일)
+    투수→포수 방향에서 바라본 시점으로 스트라이크 존 표시
+    X = 좌우, Z = 높이, Y(깊이)는 투명도/크기로 표현
     """
+    
+    pitchSelected = pyqtSignal(int)  # 공 선택 시그널 (번호)
     
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.records = []  # [(x, z, is_strike, number, speed), ...]
-        self.setMinimumSize(record_config.WIDTH, record_config.HEIGHT)
-        self.setMaximumSize(record_config.WIDTH + 100, record_config.HEIGHT + 100)
-        self.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
+        # records: [(x, z, is_strike, number, speed, trajectory_3d), ...]
+        # trajectory_3d: [(x, y, z), ...] - 3D 좌표 전체
+        self.records = []
+        self.setMinimumSize(280, 360)  # 세로가 더 긴 비율
+        self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)  # 확장 가능하게
         
-        # 스트라이크 존 범위 (정규화용)
-        self.zone_x_min = -0.25  # 미터
-        self.zone_x_max = 0.25
-        self.zone_z_min = 0.15
-        self.zone_z_max = 0.75
+        # 표시 범위 (정규화용) - 스트라이크존이 세로로 길게 보이도록 설정
+        # 실제 스트라이크존: 가로 0.3m, 세로 0.4m (세로가 1.33배 더 김)
+        # 가로 범위를 더 넓게 잡아 스트라이크존이 세로로 길어 보이게 함
+        self.zone_x_min = -0.5   # 미터 (좌우) - 더 넓게
+        self.zone_x_max = 0.5
+        self.zone_z_min = 0.0    # 미터 (높이)
+        self.zone_z_max = 0.9
         
-        # 실제 스트라이크 존 경계
+        # 깊이 범위 (Y축 - 투수→포수 방향)
+        self.depth_y_min = -0.3  # plane1 앞쪽
+        self.depth_y_max = 0.5   # 멀리서 날아오는 쪽
+        
+        # 실제 스트라이크 존 경계 (변경 없음)
         self.strike_x_min = -0.15
         self.strike_x_max = 0.15
         self.strike_z_min = 0.25
         self.strike_z_max = 0.65
         
-    def add_record(self, x, z, is_strike, speed=None):
-        """기록 추가"""
+        # 선택된 공 번호
+        self.selected_pitch = None
+        
+        # 게임모드 타겟 구역
+        self.target_zone = None
+        
+        # 궤적 표시 개수 (마지막 N개 포인트)
+        self.trajectory_points_count = 15
+        
+        # 애니메이션 관련
+        self.animation_progress = 1.0  # 0.0 ~ 1.0 (궤적 그리기 진행도)
+        self.animation_timer = QTimer(self)
+        self.animation_timer.timeout.connect(self._update_animation)
+        self.is_animating = False
+        
+    def add_record(self, x, z, is_strike, speed=None, trajectory=None):
+        """기록 추가 (3D 궤적 포함)"""
         number = len(self.records) + 1
-        self.records.append((x, z, is_strike, number, speed))
+        
+        # 좌표 유효성 검사 및 클램핑
+        # 표시 범위: X(-0.5~0.5), Z(0.0~0.9)
+        x_clamped = max(self.zone_x_min, min(self.zone_x_max, x))
+        z_clamped = max(self.zone_z_min, min(self.zone_z_max, z))
+        
+        # 이상한 좌표 감지 및 로그
+        if abs(x - x_clamped) > 0.01 or abs(z - z_clamped) > 0.01:
+            print(f"[RecordSheet2D] 좌표 클램핑: ({x:.3f}, {z:.3f}) → ({x_clamped:.3f}, {z_clamped:.3f})")
+        
+        # trajectory: 3D 궤적 전체 저장 (x, y, z)
+        traj_3d = []
+        if trajectory and len(trajectory) > 0:
+            # 마지막 N개 포인트만 사용
+            n = min(self.trajectory_points_count, len(trajectory))
+            for pt in trajectory[-n:]:
+                if len(pt) >= 3:
+                    # 궤적 점도 유효 범위로 클램핑
+                    tx = max(self.zone_x_min, min(self.zone_x_max, pt[0]))
+                    tz = max(self.zone_z_min, min(self.zone_z_max, pt[2]))
+                    traj_3d.append((tx, pt[1], tz))  # x, y, z (y는 깊이)
+                    
+        self.records.append((x_clamped, z_clamped, is_strike, number, speed, traj_3d))
         
         # 최대 개수 초과시 오래된 것 제거
         if len(self.records) > record_config.MAX_DISPLAY_COUNT:
             self.records.pop(0)
             # 번호 재정렬
-            for i, (x, z, is_s, _, spd) in enumerate(self.records):
-                self.records[i] = (x, z, is_s, i + 1, spd)
+            for i, (x, z, is_s, _, spd, traj) in enumerate(self.records):
+                self.records[i] = (x, z, is_s, i + 1, spd, traj)
+        
+        # 선택 해제 및 애니메이션 시작 (새 투구가 추가되면)
+        self.selected_pitch = None
+        self._start_animation()
         
         self.update()
+        return number
         
     def clear_records(self):
         """기록 초기화"""
         self.records = []
+        self.selected_pitch = None
+        self.target_zone = None
+        self.animation_progress = 1.0
+        self.is_animating = False
+        self.animation_timer.stop()
+        self.update()
+        
+    def _start_animation(self):
+        """궤적 애니메이션 시작"""
+        self.animation_progress = 0.0
+        self.is_animating = True
+        self.animation_timer.start(record_config.TRAJECTORY_ANIMATION_SPEED)
+        
+    def _update_animation(self):
+        """애니메이션 업데이트"""
+        self.animation_progress += 0.08
+        if self.animation_progress >= 1.0:
+            self.animation_progress = 1.0
+            self.is_animating = False
+            self.animation_timer.stop()
+        self.update()
+        
+    def set_target_zone(self, zone):
+        """게임모드 타겟 구역 설정 (1~9, None이면 해제)"""
+        self.target_zone = zone
+        self.update()
+        
+    def select_pitch(self, number):
+        """특정 투구 선택 (하이라이트)"""
+        self.selected_pitch = number
         self.update()
         
     def _world_to_widget(self, x, z):
-        """월드 좌표를 위젯 좌표로 변환"""
+        """월드 좌표(정면 시점)를 위젯 좌표로 변환 (종횡비 유지)"""
         margin = record_config.MARGIN
-        w = self.width() - 2 * margin
-        h = self.height() - 2 * margin
+        available_w = self.width() - 2 * margin
+        available_h = self.height() - 2 * margin
+        
+        # 월드 좌표계의 범위
+        world_w = self.zone_x_max - self.zone_x_min  # 0.8m
+        world_h = self.zone_z_max - self.zone_z_min  # 1.07m
+        world_aspect = world_h / world_w  # 세로/가로 비율 (1.33...)
+        
+        # 위젯의 종횡비
+        widget_aspect = available_h / available_w
+        
+        # 종횡비 유지하면서 그리기 영역 계산
+        if widget_aspect > world_aspect:
+            # 위젯이 더 세로로 길다 → 가로 기준
+            draw_w = available_w
+            draw_h = available_w * world_aspect
+            offset_x = 0
+            offset_y = (available_h - draw_h) / 2
+        else:
+            # 위젯이 더 가로로 길다 → 세로 기준
+            draw_h = available_h
+            draw_w = available_h / world_aspect
+            offset_x = (available_w - draw_w) / 2
+            offset_y = 0
         
         # 정규화 (0~1)
-        nx = (x - self.zone_x_min) / (self.zone_x_max - self.zone_x_min)
-        nz = (z - self.zone_z_min) / (self.zone_z_max - self.zone_z_min)
+        nx = (x - self.zone_x_min) / world_w
+        nz = (z - self.zone_z_min) / world_h
         
-        # 위젯 좌표 (Z는 위아래 반전)
-        wx = margin + nx * w
-        wy = margin + (1 - nz) * h
+        # 위젯 좌표 (Z는 높이이므로 위아래 반전)
+        wx = margin + offset_x + nx * draw_w
+        wy = margin + offset_y + (1 - nz) * draw_h
         
         return wx, wy
         
@@ -108,6 +212,10 @@ class RecordSheet2D(QWidget):
         # 스트라이크 존 배경 (다크 녹색 톤)
         zone_bg = QColor(*record_config.COLOR_ZONE_FILL, 150)
         painter.fillRect(int(zone_left), int(zone_top), int(zone_w), int(zone_h), zone_bg)
+        
+        # === 게임모드 타겟 구역 하이라이트 ===
+        if self.target_zone is not None and 1 <= self.target_zone <= 9:
+            self._draw_target_zone(painter, zone_left, zone_top, zone_w, zone_h)
         
         # 9분할 그리드 (다크 테마)
         grid_pen = QPen(QColor(*record_config.COLOR_GRID), 1, Qt.DashLine)
@@ -148,48 +256,453 @@ class RecordSheet2D(QWidget):
         for num, x, y in zone_positions:
             painter.drawText(int(x - 5), int(y + 5), str(num))
         
-        # 공 마커 그리기
+        # === 궤적 및 공 마커 그리기 ===
         font = QFont(window_config.FONT_FAMILY, record_config.MARKER_FONT_SIZE)
         painter.setFont(font)
         
-        for x, z, is_strike, number, speed in self.records:
-            wx, wy = self._world_to_widget(x, z)
+        # 최신 공 번호 (마지막 투구)
+        latest_number = len(self.records) if self.records else 0
+        
+        for x, z, is_strike, number, speed, trajectory in self.records:
+            is_selected = (number == self.selected_pitch)
+            is_latest = (number == latest_number)
             
-            # 마커 색상
-            if is_strike:
-                color = QColor(*record_config.COLOR_STRIKE)
+            # 궤적 표시 조건:
+            # 1. 선택된 공이 있으면 → 선택된 공의 궤적만 표시
+            # 2. 선택된 공이 없으면 → 최신 공의 궤적만 표시
+            show_trajectory = False
+            if self.selected_pitch is not None:
+                show_trajectory = is_selected
             else:
-                color = QColor(*record_config.COLOR_BALL)
+                show_trajectory = is_latest
             
-            # 마커 그리기
-            painter.setPen(QPen(color.darker(120), 2))
-            painter.setBrush(QBrush(color))
-            painter.drawEllipse(
-                int(wx - record_config.MARKER_RADIUS),
-                int(wy - record_config.MARKER_RADIUS),
-                record_config.MARKER_RADIUS * 2,
-                record_config.MARKER_RADIUS * 2
-            )
+            # 궤적 그리기
+            if trajectory and len(trajectory) >= 2 and show_trajectory:
+                # 애니메이션 진행도 적용
+                anim_progress = self.animation_progress if (is_latest and not self.selected_pitch) else 1.0
+                self._draw_trajectory_mlb(painter, trajectory, is_strike, is_selected, anim_progress)
             
-            # 번호 표시
-            painter.setPen(Qt.white)
-            text = str(number)
-            painter.drawText(
-                int(wx - 4), int(wy + 4),
-                text
-            )
+            # 마커는 항상 그리기 (모든 공의 위치 표시)
+            self._draw_marker_mlb(painter, x, z, is_strike, number, is_selected, show_trajectory)
         
         # 타이틀 (다크 테마)
         title_font = QFont(window_config.FONT_FAMILY, 12, QFont.Bold)
         painter.setFont(title_font)
         painter.setPen(QColor(*record_config.COLOR_TEXT))
         painter.drawText(10, 18, "⚾ 투구 기록")
+        
+    def _draw_target_zone(self, painter, zone_left, zone_top, zone_w, zone_h):
+        """타겟 구역 하이라이트 그리기"""
+        zone_idx = self.target_zone - 1
+        row = zone_idx // 3
+        col = zone_idx % 3
+        
+        cell_w = zone_w / 3
+        cell_h = zone_h / 3
+        
+        x = zone_left + col * cell_w
+        y = zone_top + row * cell_h
+        
+        # 반투명 주황색 채우기
+        target_color = QColor(255, 165, 0, 100)
+        painter.fillRect(int(x), int(y), int(cell_w), int(cell_h), target_color)
+        
+        # 테두리
+        target_pen = QPen(QColor(255, 165, 0), 2)
+        painter.setPen(target_pen)
+        painter.drawRect(int(x), int(y), int(cell_w), int(cell_h))
+    
+    def _depth_to_visual(self, y):
+        """깊이(Y)를 시각적 속성으로 변환
+        Y가 클수록(멀수록) = 더 작고, 더 투명
+        Y가 작을수록(가까울수록) = 더 크고, 더 불투명
+        """
+        # Y 정규화 (0=가깝다, 1=멀다)
+        norm_y = max(0, min(1, (y - self.depth_y_min) / (self.depth_y_max - self.depth_y_min + 0.01)))
+        
+        # 크기 배율 (멀수록 작게: 0.5 ~ 1.0)
+        scale = 1.0 - 0.5 * norm_y
+        
+        # 투명도 (멀수록 투명: 80 ~ 255)
+        alpha = int(80 + (1 - norm_y) * 175)
+        
+        return scale, alpha
+        
+    def _draw_trajectory(self, painter, trajectory, is_strike, is_selected):
+        """궤적 그리기 (야구 중계 스타일 - 정면 시점, 깊이 효과)
+        
+        3D 궤적을 정면에서 본 것처럼 표현:
+        - X = 좌우 위치
+        - Z = 높이
+        - Y = 깊이 (투명도/선 굵기로 표현)
+        """
+        if len(trajectory) < 2:
+            return
+            
+        # 기본 색상
+        if is_selected:
+            base_color = QColor(255, 200, 100) if is_strike else QColor(255, 150, 150)
+            base_pen_width = 4
+        else:
+            base_color = QColor(100, 200, 100) if is_strike else QColor(200, 100, 100)
+            base_pen_width = 3
+        
+        # 궤적 점들을 연결 (깊이 효과 적용)
+        for i in range(len(trajectory) - 1):
+            x1, y1, z1 = trajectory[i]
+            x2, y2, z2 = trajectory[i + 1]
+            
+            # 정면 시점: X=좌우, Z=높이
+            wx1, wz1 = self._world_to_widget(x1, z1)
+            wx2, wz2 = self._world_to_widget(x2, z2)
+            
+            # 깊이에 따른 시각 효과 (평균 깊이 사용)
+            avg_y = (y1 + y2) / 2
+            scale, alpha = self._depth_to_visual(avg_y)
+            
+            # 진행도에 따른 추가 그라데이션 (시작→끝)
+            progress = i / max(1, len(trajectory) - 1)
+            alpha = int(alpha * (0.3 + 0.7 * progress))
+            
+            # 선 스타일 설정
+            color = QColor(base_color)
+            color.setAlpha(alpha)
+            pen_width = max(1, int(base_pen_width * scale))
+            
+            pen = QPen(color, pen_width)
+            pen.setCapStyle(Qt.RoundCap)
+            painter.setPen(pen)
+            
+            painter.drawLine(int(wx1), int(wz1), int(wx2), int(wz2))
+            
+            # 깊이를 나타내는 작은 원 그리기 (선택된 궤적만)
+            if is_selected and i % 2 == 0:
+                circle_radius = max(2, int(4 * scale))
+                circle_color = QColor(base_color)
+                circle_color.setAlpha(int(alpha * 0.5))
+                painter.setBrush(QBrush(circle_color))
+                painter.setPen(Qt.NoPen)
+                painter.drawEllipse(int(wx1 - circle_radius), int(wz1 - circle_radius),
+                                   circle_radius * 2, circle_radius * 2)
+        
+        # 화살표 끝 (마지막 방향 표시 - 정면 시점)
+        if len(trajectory) >= 2:
+            x1, y1, z1 = trajectory[-2]
+            x2, y2, z2 = trajectory[-1]
+            wx1, wz1 = self._world_to_widget(x1, z1)
+            wx2, wz2 = self._world_to_widget(x2, z2)
+            
+            # 방향 벡터 계산
+            dx = wx2 - wx1
+            dy = wz2 - wz1
+            length = math.sqrt(dx*dx + dy*dy)
+            
+            if length > 0:
+                # 화살표 머리 그리기
+                angle = math.atan2(dy, dx)
+                arrow_size = 10
+                
+                ax1 = wx2 - arrow_size * math.cos(angle - math.pi/6)
+                ay1 = wz2 - arrow_size * math.sin(angle - math.pi/6)
+                ax2 = wx2 - arrow_size * math.cos(angle + math.pi/6)
+                ay2 = wz2 - arrow_size * math.sin(angle + math.pi/6)
+                
+                arrow_color = QColor(255, 220, 100) if is_selected else base_color
+                arrow_color.setAlpha(220)
+                painter.setPen(QPen(arrow_color, 2))
+                painter.setBrush(QBrush(arrow_color))
+                
+                # 삼각형 화살표
+                arrow_path = QPainterPath()
+                arrow_path.moveTo(wx2, wz2)
+                arrow_path.lineTo(ax1, ay1)
+                arrow_path.lineTo(ax2, ay2)
+                arrow_path.closeSubpath()
+                painter.drawPath(arrow_path)
+            
+    def _draw_marker(self, painter, x, z, is_strike, number, is_selected):
+        """마커 그리기"""
+        wx, wy = self._world_to_widget(x, z)
+        
+        # 마커 색상
+        if is_strike:
+            color = QColor(*record_config.COLOR_STRIKE)
+        else:
+            color = QColor(*record_config.COLOR_BALL)
+        
+        # 선택된 경우 테두리 강조
+        radius = record_config.MARKER_RADIUS
+        if is_selected:
+            # 외곽 글로우 효과
+            glow_color = QColor(255, 255, 0, 100)
+            painter.setPen(Qt.NoPen)
+            painter.setBrush(QBrush(glow_color))
+            painter.drawEllipse(int(wx - radius - 4), int(wy - radius - 4),
+                               (radius + 4) * 2, (radius + 4) * 2)
+            
+            # 선택 테두리
+            painter.setPen(QPen(QColor(255, 255, 0), 3))
+            radius += 2
+        else:
+            painter.setPen(QPen(color.darker(120), 2))
+        
+        # 마커
+        painter.setBrush(QBrush(color))
+        painter.drawEllipse(int(wx - radius), int(wy - radius),
+                           radius * 2, radius * 2)
+        
+        # 번호 표시
+        painter.setPen(Qt.white)
+        text = str(number)
+        painter.drawText(int(wx - 4), int(wy + 4), text)
+    
+    def _catmull_rom_spline(self, p0, p1, p2, p3, num_points=10):
+        """Catmull-Rom 스플라인으로 부드러운 곡선 점 생성"""
+        points = []
+        for i in range(num_points):
+            t = i / (num_points - 1)
+            t2 = t * t
+            t3 = t2 * t
+            
+            # Catmull-Rom 계수
+            x = 0.5 * ((2 * p1[0]) +
+                      (-p0[0] + p2[0]) * t +
+                      (2*p0[0] - 5*p1[0] + 4*p2[0] - p3[0]) * t2 +
+                      (-p0[0] + 3*p1[0] - 3*p2[0] + p3[0]) * t3)
+            
+            y = 0.5 * ((2 * p1[1]) +
+                      (-p0[1] + p2[1]) * t +
+                      (2*p0[1] - 5*p1[1] + 4*p2[1] - p3[1]) * t2 +
+                      (-p0[1] + 3*p1[1] - 3*p2[1] + p3[1]) * t3)
+            
+            points.append((x, y))
+        return points
+    
+    def _draw_trajectory_mlb(self, painter, trajectory, is_strike, is_selected, animation_progress=1.0):
+        """MLB 스타일 부드러운 곡선 궤적 그리기
+        
+        - Catmull-Rom 스플라인으로 부드러운 곡선
+        - 그라데이션 색상 (시작→끝)
+        - 글로우 효과
+        - 애니메이션 지원
+        - 정면 시점 (X=좌우, Z=높이) - 마커와 동일한 좌표계
+        - Y(깊이)는 선 굵기/투명도로 표현
+        """
+        if len(trajectory) < 2:
+            return
+        
+        # 색상 선택
+        if is_selected:
+            colors = record_config.TRAJECTORY_COLORS['selected']
+        elif is_strike:
+            colors = record_config.TRAJECTORY_COLORS['strike']
+        else:
+            colors = record_config.TRAJECTORY_COLORS['ball']
+        
+        start_color = QColor(*colors['start'])
+        end_color = QColor(*colors['end'])
+        
+        # 위젯 좌표로 변환 (정면 시점: X=좌우, Z=높이) - 마커와 동일
+        widget_points = []
+        depth_values = []  # Y값 저장 (깊이 효과용)
+        
+        for x, y, z in trajectory:
+            # 정면 시점: X=좌우, Z=높이 (마커와 동일한 좌표계!)
+            wx, wz = self._world_to_widget(x, z)
+            widget_points.append((wx, wz))
+            depth_values.append(y)
+        
+        # Catmull-Rom 스플라인으로 부드러운 곡선 점 생성
+        smooth_points = []
+        if len(widget_points) >= 4:
+            for i in range(len(widget_points) - 3):
+                p0, p1, p2, p3 = widget_points[i:i+4]
+                segment_points = self._catmull_rom_spline(p0, p1, p2, p3, 8)
+                smooth_points.extend(segment_points)
+            # 마지막 점 추가
+            smooth_points.append(widget_points[-1])
+        else:
+            smooth_points = widget_points
+        
+        # 애니메이션 진행도에 따라 표시할 점 수 결정
+        total_points = len(smooth_points)
+        visible_count = max(2, int(total_points * animation_progress))
+        visible_points = smooth_points[:visible_count]
+        
+        if len(visible_points) < 2:
+            return
+        
+        # QPainterPath 생성
+        path = QPainterPath()
+        path.moveTo(visible_points[0][0], visible_points[0][1])
+        
+        for i in range(1, len(visible_points)):
+            path.lineTo(visible_points[i][0], visible_points[i][1])
+        
+        # 글로우 효과 (선택된 경우)
+        if is_selected:
+            glow_color = QColor(end_color)
+            glow_color.setAlpha(60)
+            glow_pen = QPen(glow_color, record_config.TRAJECTORY_GLOW_WIDTH)
+            glow_pen.setCapStyle(Qt.RoundCap)
+            glow_pen.setJoinStyle(Qt.RoundJoin)
+            painter.setPen(glow_pen)
+            painter.drawPath(path)
+        
+        # 그라데이션 스트로크
+        gradient = QLinearGradient(
+            visible_points[0][0], visible_points[0][1],
+            visible_points[-1][0], visible_points[-1][1]
+        )
+        gradient.setColorAt(0, start_color)
+        gradient.setColorAt(1, end_color)
+        
+        pen = QPen(QBrush(gradient), record_config.TRAJECTORY_WIDTH)
+        pen.setCapStyle(Qt.RoundCap)
+        pen.setJoinStyle(Qt.RoundJoin)
+        painter.setPen(pen)
+        painter.drawPath(path)
+        
+        # 궤적 끝점에 화살표 효과 (애니메이션 완료 시)
+        if animation_progress >= 0.95 and len(visible_points) >= 2:
+            self._draw_arrow_head(painter, visible_points[-2], visible_points[-1], end_color)
+    
+    def _draw_arrow_head(self, painter, p1, p2, color):
+        """화살표 머리 그리기"""
+        dx = p2[0] - p1[0]
+        dy = p2[1] - p1[1]
+        length = math.sqrt(dx*dx + dy*dy)
+        
+        if length < 1:
+            return
+            
+        angle = math.atan2(dy, dx)
+        arrow_size = 12
+        
+        ax1 = p2[0] - arrow_size * math.cos(angle - math.pi/5)
+        ay1 = p2[1] - arrow_size * math.sin(angle - math.pi/5)
+        ax2 = p2[0] - arrow_size * math.cos(angle + math.pi/5)
+        ay2 = p2[1] - arrow_size * math.sin(angle + math.pi/5)
+        
+        arrow_color = QColor(color)
+        arrow_color.setAlpha(230)
+        
+        painter.setPen(QPen(arrow_color, 2))
+        painter.setBrush(QBrush(arrow_color))
+        
+        arrow_path = QPainterPath()
+        arrow_path.moveTo(p2[0], p2[1])
+        arrow_path.lineTo(ax1, ay1)
+        arrow_path.lineTo(ax2, ay2)
+        arrow_path.closeSubpath()
+        painter.drawPath(arrow_path)
+    
+    def _draw_marker_mlb(self, painter, x, z, is_strike, number, is_selected, has_trajectory):
+        """MLB 스타일 마커 그리기 (3D 효과 + 그림자)"""
+        wx, wy = self._world_to_widget(x, z)
+        
+        # 기본 색상
+        if is_strike:
+            base_color = QColor(*record_config.COLOR_STRIKE)
+        else:
+            base_color = QColor(*record_config.COLOR_BALL)
+        
+        radius = record_config.MARKER_RADIUS
+        
+        # 그림자 효과
+        shadow_offset = record_config.MARKER_SHADOW_OFFSET
+        shadow_color = QColor(0, 0, 0, record_config.MARKER_SHADOW_ALPHA)
+        painter.setPen(Qt.NoPen)
+        painter.setBrush(QBrush(shadow_color))
+        painter.drawEllipse(int(wx - radius + shadow_offset), int(wy - radius + shadow_offset),
+                           radius * 2, radius * 2)
+        
+        # 선택된 경우 글로우 효과
+        if is_selected:
+            glow_color = QColor(255, 255, 100, 120)
+            painter.setBrush(QBrush(glow_color))
+            painter.drawEllipse(int(wx - radius - 5), int(wy - radius - 5),
+                               (radius + 5) * 2, (radius + 5) * 2)
+            radius += 2
+        
+        # 궤적이 표시된 공은 더 강조
+        if has_trajectory:
+            highlight_color = QColor(255, 255, 255, 80)
+            painter.setBrush(QBrush(highlight_color))
+            painter.drawEllipse(int(wx - radius - 3), int(wy - radius - 3),
+                               (radius + 3) * 2, (radius + 3) * 2)
+        
+        # 3D 그라데이션 효과
+        gradient = QRadialGradient(wx - radius/3, wy - radius/3, radius * 1.5)
+        gradient.setColorAt(0, base_color.lighter(150))
+        gradient.setColorAt(0.5, base_color)
+        gradient.setColorAt(1, base_color.darker(130))
+        
+        painter.setPen(QPen(base_color.darker(150), 1))
+        painter.setBrush(QBrush(gradient))
+        painter.drawEllipse(int(wx - radius), int(wy - radius),
+                           radius * 2, radius * 2)
+        
+        # 하이라이트 (3D 효과)
+        highlight = QRadialGradient(wx - radius/2, wy - radius/2, radius/2)
+        highlight.setColorAt(0, QColor(255, 255, 255, 180))
+        highlight.setColorAt(1, QColor(255, 255, 255, 0))
+        painter.setPen(Qt.NoPen)
+        painter.setBrush(QBrush(highlight))
+        painter.drawEllipse(int(wx - radius + 2), int(wy - radius + 2),
+                           int(radius * 0.8), int(radius * 0.8))
+        
+        # 번호 표시
+        font = QFont(window_config.FONT_FAMILY, record_config.MARKER_FONT_SIZE - 1, QFont.Bold)
+        painter.setFont(font)
+        painter.setPen(Qt.white)
+        text = str(number)
+        # 텍스트 중앙 정렬
+        fm = painter.fontMetrics()
+        text_w = fm.horizontalAdvance(text)
+        text_h = fm.height()
+        painter.drawText(int(wx - text_w/2), int(wy + text_h/4), text)
+        
+    def mousePressEvent(self, event):
+        """마우스 클릭 이벤트 - 공 선택/해제"""
+        if event.button() == Qt.LeftButton:
+            click_x = event.x()
+            click_y = event.y()
+            
+            # 가장 가까운 공 찾기
+            min_dist = float('inf')
+            closest_number = None
+            
+            for x, z, is_strike, number, speed, traj in self.records:
+                wx, wy = self._world_to_widget(x, z)
+                dist = math.sqrt((click_x - wx)**2 + (click_y - wy)**2)
+                
+                if dist < record_config.MARKER_RADIUS + 10 and dist < min_dist:
+                    min_dist = dist
+                    closest_number = number
+            
+            # 같은 공 다시 클릭하면 선택 해제 (전체 보기로 전환)
+            if closest_number is not None:
+                if self.selected_pitch == closest_number:
+                    # 선택 해제 → 최신 궤적 표시로 전환
+                    self.selected_pitch = None
+                else:
+                    # 새로운 공 선택
+                    self.selected_pitch = closest_number
+                self.pitchSelected.emit(closest_number if self.selected_pitch else 0)
+                self.update()
+            else:
+                # 빈 공간 클릭 시 선택 해제
+                if self.selected_pitch is not None:
+                    self.selected_pitch = None
+                    self.pitchSelected.emit(0)
+                    self.update()
 
 
 class Scoreboard(QFrame):
     """
-    스코어보드 위젯
-    B-S-O 카운트, 이닝, 점수 표시
+    스코어보드 위젯 (간소화 버전)
+    B-S-O 카운트만 표시 (이닝, 점수 제거)
     """
     
     countChanged = pyqtSignal(int, int, int)  # balls, strikes, outs
@@ -202,17 +715,14 @@ class Scoreboard(QFrame):
         self.balls = 0
         self.strikes = 0
         self.outs = 0
-        self.inning = 1
-        self.is_top = True
-        self.home_score = 0
-        self.away_score = 0
         
         self._init_ui()
         
     def _init_ui(self):
         """UI 초기화"""
         layout = QHBoxLayout(self)
-        layout.setSpacing(20)
+        layout.setSpacing(15)
+        layout.setContentsMargins(15, 10, 15, 10)
         
         # 카운트 섹션
         count_frame = QFrame()
@@ -266,61 +776,7 @@ class Scoreboard(QFrame):
             self.out_indicators.append(indicator)
         
         layout.addWidget(count_frame)
-        
-        # 구분선
-        line = QFrame()
-        line.setFrameShape(QFrame.VLine)
-        line.setFrameShadow(QFrame.Sunken)
-        layout.addWidget(line)
-        
-        # 이닝 섹션
-        inning_frame = QFrame()
-        inning_layout = QVBoxLayout(inning_frame)
-        
-        self.inning_label = QLabel(f"{'▲' if self.is_top else '▼'} {self.inning}회")
-        self.inning_label.setFont(QFont(window_config.FONT_FAMILY, 18, QFont.Bold))
-        self.inning_label.setAlignment(Qt.AlignCenter)
-        inning_layout.addWidget(self.inning_label)
-        
-        layout.addWidget(inning_frame)
-        
-        # 구분선
-        line2 = QFrame()
-        line2.setFrameShape(QFrame.VLine)
-        line2.setFrameShadow(QFrame.Sunken)
-        layout.addWidget(line2)
-        
-        # 점수 섹션
-        score_frame = QFrame()
-        score_layout = QGridLayout(score_frame)
-        
-        font_team = QFont(window_config.FONT_FAMILY, 12)
-        font_score = QFont(window_config.FONT_FAMILY, 24, QFont.Bold)
-        
-        lbl_away = QLabel("원정")
-        lbl_away.setFont(font_team)
-        score_layout.addWidget(lbl_away, 0, 0)
-        
-        self.away_score_label = QLabel(str(self.away_score))
-        self.away_score_label.setFont(font_score)
-        self.away_score_label.setAlignment(Qt.AlignCenter)
-        score_layout.addWidget(self.away_score_label, 0, 1)
-        
-        lbl_vs = QLabel("-")
-        lbl_vs.setFont(font_score)
-        lbl_vs.setAlignment(Qt.AlignCenter)
-        score_layout.addWidget(lbl_vs, 0, 2)
-        
-        self.home_score_label = QLabel(str(self.home_score))
-        self.home_score_label.setFont(font_score)
-        self.home_score_label.setAlignment(Qt.AlignCenter)
-        score_layout.addWidget(self.home_score_label, 0, 3)
-        
-        lbl_home = QLabel("홈")
-        lbl_home.setFont(font_team)
-        score_layout.addWidget(lbl_home, 0, 4)
-        
-        layout.addWidget(score_frame)
+        layout.addStretch()
         
     def add_strike(self):
         """스트라이크 추가"""
@@ -345,16 +801,6 @@ class Scoreboard(QFrame):
         self.outs += 1
         if self.outs >= 3:
             self.outs = 0
-            self._next_half_inning()
-        self._update_display()
-        
-    def _next_half_inning(self):
-        """다음 하프 이닝"""
-        if self.is_top:
-            self.is_top = False
-        else:
-            self.is_top = True
-            self.inning += 1
         self._update_display()
         
     def reset_count(self):
@@ -368,10 +814,6 @@ class Scoreboard(QFrame):
         self.balls = 0
         self.strikes = 0
         self.outs = 0
-        self.inning = 1
-        self.is_top = True
-        self.home_score = 0
-        self.away_score = 0
         self._update_display()
         
     def _update_display(self):
@@ -387,13 +829,6 @@ class Scoreboard(QFrame):
         # Out indicators
         for i, indicator in enumerate(self.out_indicators):
             indicator.setText("●" if i < self.outs else "○")
-            
-        # Inning
-        self.inning_label.setText(f"{'▲' if self.is_top else '▼'} {self.inning}회")
-        
-        # Scores
-        self.away_score_label.setText(str(self.away_score))
-        self.home_score_label.setText(str(self.home_score))
         
         self.countChanged.emit(self.balls, self.strikes, self.outs)
 
@@ -611,3 +1046,127 @@ class StatsWidget(QFrame):
         else:
             self.avg_speed_label.setText("- km/h")
             self.max_speed_label.setText("- km/h")
+
+
+class PitchListWidget(QFrame):
+    """
+    투구 리스트 위젯
+    던진 공들의 목록을 표시하고 선택 가능
+    """
+    
+    pitchSelected = pyqtSignal(int)  # 선택된 공 번호
+    
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setFrameStyle(QFrame.Box | QFrame.Raised)
+        self.setLineWidth(1)
+        self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)  # 확장 가능
+        
+        self.pitches = []  # [(number, is_strike, speed), ...]
+        self.selected_number = None  # 현재 선택된 공 번호
+        
+        self._init_ui()
+        
+    def _init_ui(self):
+        """UI 초기화"""
+        layout = QVBoxLayout(self)
+        layout.setSpacing(5)
+        layout.setContentsMargins(5, 5, 5, 5)
+        
+        # 타이틀
+        title = QLabel("📜 투구 목록")
+        title.setFont(QFont(window_config.FONT_FAMILY, 11, QFont.Bold))
+        title.setStyleSheet("color: #ffffff;")
+        layout.addWidget(title)
+        
+        # 리스트 위젯
+        self.list_widget = QListWidget()
+        self.list_widget.setStyleSheet("""
+            QListWidget {
+                background-color: #2a2a2a;
+                border: 1px solid #444;
+                border-radius: 3px;
+                color: #ffffff;
+                font-size: 12px;
+            }
+            QListWidget::item {
+                padding: 8px;
+                border-bottom: 1px solid #3a3a3a;
+            }
+            QListWidget::item:selected {
+                background-color: #0078d4;
+            }
+            QListWidget::item:hover {
+                background-color: #3a3a3a;
+            }
+        """)
+        # 높이 제한 제거 - 확장 가능하게
+        self.list_widget.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+        self.list_widget.itemClicked.connect(self._on_item_clicked)
+        layout.addWidget(self.list_widget)
+        
+    def add_pitch(self, number, is_strike, speed):
+        """투구 추가"""
+        self.pitches.append((number, is_strike, speed))
+        
+        # 결과 표시
+        result = "S" if is_strike else "B"
+        result_color = "#00CC66" if is_strike else "#FF6666"
+        
+        # 구속 표시
+        speed_text = f"{speed:.1f}km/h" if speed and speed > 0 else "-"
+        
+        # 리스트 아이템 생성
+        item_text = f"#{number}  [{result}]  {speed_text}"
+        item = QListWidgetItem(item_text)
+        
+        # 색상 설정
+        if is_strike:
+            item.setForeground(QColor(0, 200, 100))
+        else:
+            item.setForeground(QColor(255, 100, 100))
+            
+        self.list_widget.addItem(item)
+        
+        # 스크롤을 최신 항목으로
+        self.list_widget.scrollToBottom()
+        
+    def clear_pitches(self):
+        """리스트 초기화"""
+        self.pitches = []
+        self.selected_number = None
+        self.list_widget.clear()
+        
+    def select_pitch(self, number):
+        """특정 투구 선택 (0이면 선택 해제)"""
+        if number == 0:
+            # 선택 해제
+            self.list_widget.clearSelection()
+            self.selected_number = None
+        else:
+            for i in range(self.list_widget.count()):
+                item = self.list_widget.item(i)
+                if i + 1 == number:
+                    self.list_widget.setCurrentItem(item)
+                    self.selected_number = number
+                    break
+                
+    def _on_item_clicked(self, item):
+        """아이템 클릭 이벤트 - 토글 기능"""
+        row = self.list_widget.row(item)
+        number = row + 1
+        
+        # 같은 아이템 다시 클릭하면 선택 해제
+        if self.selected_number == number:
+            self.list_widget.clearSelection()
+            self.selected_number = None
+            self.pitchSelected.emit(0)  # 0은 선택 해제 의미
+        else:
+            self.selected_number = number
+            self.pitchSelected.emit(number)
+        
+    def get_pitch_info(self, number):
+        """특정 투구 정보 반환"""
+        if 0 < number <= len(self.pitches):
+            return self.pitches[number - 1]
+        return None

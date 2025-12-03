@@ -11,7 +11,8 @@ from PyQt5.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QGridLayout, QLabel, QPushButton, QCheckBox, QGroupBox,
     QFrame, QSplitter, QComboBox, QSlider, QFileDialog,
-    QMessageBox, QStatusBar, QTabWidget, QSizePolicy
+    QMessageBox, QStatusBar, QTabWidget, QSizePolicy,
+    QDialog, QDialogButtonBox, QScrollArea
 )
 from PyQt5.QtCore import Qt, QTimer, pyqtSignal, QThread
 from PyQt5.QtGui import QImage, QPixmap, QFont, QPalette, QColor
@@ -21,8 +22,253 @@ from gui_config import (
     scoreboard_config, window_config
 )
 from gui_widgets import (
-    RecordSheet2D, Scoreboard, GameModeWidget, StatsWidget
+    RecordSheet2D, Scoreboard, GameModeWidget, StatsWidget, PitchListWidget
 )
+
+
+class VisualizationSettingsDialog(QDialog):
+    """
+    시각화 설정 다이얼로그 (별도 창)
+    """
+    
+    settingsChanged = pyqtSignal(dict)  # 설정 변경 시그널
+    ballColorChanged = pyqtSignal(str)  # 공 색상 변경 시그널
+    
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("⚙️ 시각화 설정")
+        self.setMinimumSize(280, 450)
+        self.setModal(False)  # 모달리스 - 메인 창과 동시 조작 가능
+        
+        self.vis_checkboxes = {}
+        self._init_ui()
+        self._apply_style()
+    
+    def _apply_style(self):
+        """다이얼로그 스타일 적용"""
+        self.setStyleSheet("""
+            QDialog {
+                background-color: #2b2b2b;
+            }
+            QLabel {
+                color: #ffffff;
+            }
+            QCheckBox {
+                color: #ddd;
+                padding: 5px;
+            }
+            QCheckBox::indicator {
+                width: 16px;
+                height: 16px;
+            }
+            QCheckBox::indicator:unchecked {
+                border: 1px solid #666;
+                background-color: #444;
+                border-radius: 3px;
+            }
+            QCheckBox::indicator:checked {
+                border: 1px solid #4a9eff;
+                background-color: #4a9eff;
+                border-radius: 3px;
+            }
+            QGroupBox {
+                color: #fff;
+                font-weight: bold;
+                border: 1px solid #555;
+                border-radius: 4px;
+                margin-top: 10px;
+                padding-top: 10px;
+            }
+            QGroupBox::title {
+                subcontrol-origin: margin;
+                left: 10px;
+            }
+        """)
+        
+    def _init_ui(self):
+        """UI 초기화"""
+        layout = QVBoxLayout(self)
+        layout.setSpacing(10)
+        layout.setContentsMargins(15, 15, 15, 15)
+        
+        # 타이틀
+        title = QLabel("⚙️ 시각화 설정")
+        title.setFont(QFont(window_config.FONT_FAMILY, 14, QFont.Bold))
+        title.setStyleSheet("color: #ffffff;")
+        layout.addWidget(title)
+        
+        # 구분선
+        line = QFrame()
+        line.setFrameShape(QFrame.HLine)
+        line.setStyleSheet("background-color: #555;")
+        layout.addWidget(line)
+        
+        # === 공 색상 선택 ===
+        color_group = QGroupBox("🎾 공 색상")
+        color_group.setStyleSheet("""
+            QGroupBox {
+                color: #fff;
+                font-weight: bold;
+                border: 1px solid #555;
+                border-radius: 4px;
+                margin-top: 8px;
+                padding-top: 8px;
+            }
+            QGroupBox::title {
+                subcontrol-origin: margin;
+                left: 8px;
+            }
+        """)
+        color_layout = QVBoxLayout(color_group)
+        
+        self.ball_color_combo = QComboBox()
+        self.ball_color_combo.addItems(["형광공", "노랑공", "하얀공"])
+        self.ball_color_combo.setStyleSheet("""
+            QComboBox {
+                background-color: #444;
+                color: #fff;
+                border: 1px solid #666;
+                border-radius: 4px;
+                padding: 5px;
+                min-height: 25px;
+            }
+            QComboBox:hover {
+                border: 1px solid #888;
+            }
+            QComboBox::drop-down {
+                border: none;
+                width: 20px;
+            }
+            QComboBox::down-arrow {
+                image: none;
+                border-left: 5px solid transparent;
+                border-right: 5px solid transparent;
+                border-top: 5px solid #fff;
+                margin-right: 5px;
+            }
+            QComboBox QAbstractItemView {
+                background-color: #444;
+                color: #fff;
+                selection-background-color: #666;
+            }
+        """)
+        self.ball_color_combo.currentTextChanged.connect(self._on_ball_color_changed)
+        color_layout.addWidget(self.ball_color_combo)
+        
+        # 색상 설명 라벨
+        self.color_desc_label = QLabel("형광 연두색 공 (기본값)")
+        self.color_desc_label.setStyleSheet("color: #aaa; font-size: 10px;")
+        color_layout.addWidget(self.color_desc_label)
+        
+        layout.addWidget(color_group)
+        
+        # 구분선
+        line2 = QFrame()
+        line2.setFrameShape(QFrame.HLine)
+        line2.setStyleSheet("background-color: #555;")
+        layout.addWidget(line2)
+        
+        # 시각화 옵션들 - 그룹화
+        # === 영역 표시 그룹 ===
+        zone_group = QGroupBox("📍 영역 표시")
+        zone_layout = QVBoxLayout(zone_group)
+        
+        zone_options = [
+            ("zone", "스트라이크 존", True),
+            ("plane1", "판정면 1 (앞)", True),
+            ("plane2", "판정면 2 (뒤)", True),
+            ("grid", "9분할 그리드", True),
+        ]
+        
+        for key, label, default in zone_options:
+            cb = QCheckBox(label)
+            cb.setChecked(default)
+            cb.stateChanged.connect(self._on_setting_changed)
+            zone_layout.addWidget(cb)
+            self.vis_checkboxes[key] = cb
+        
+        layout.addWidget(zone_group)
+        
+        # === 공 표시 그룹 ===
+        ball_group = QGroupBox("⚾ 공 표시")
+        ball_layout = QVBoxLayout(ball_group)
+        
+        ball_options = [
+            ("trajectory", "공 궤적", True),
+            ("ball_markers", "공 위치 마커 (넘버링)", True),
+            ("speed", "구속 표시", True),
+        ]
+        
+        for key, label, default in ball_options:
+            cb = QCheckBox(label)
+            cb.setChecked(default)
+            cb.stateChanged.connect(self._on_setting_changed)
+            ball_layout.addWidget(cb)
+            self.vis_checkboxes[key] = cb
+        
+        layout.addWidget(ball_group)
+        
+        # === 기타 표시 그룹 ===
+        misc_group = QGroupBox("🔧 기타")
+        misc_layout = QVBoxLayout(misc_group)
+        
+        misc_options = [
+            ("scoreboard", "스코어보드", True),
+            ("aruco", "ArUco 마커", True),
+            ("axes", "좌표축", False),
+            ("fmo", "FMO 모드", False),
+        ]
+        
+        for key, label, default in misc_options:
+            cb = QCheckBox(label)
+            cb.setChecked(default)
+            cb.stateChanged.connect(self._on_setting_changed)
+            misc_layout.addWidget(cb)
+            self.vis_checkboxes[key] = cb
+        
+        layout.addWidget(misc_group)
+        
+        layout.addStretch()
+        
+        # 닫기 버튼
+        close_btn = QPushButton("닫기")
+        close_btn.setStyleSheet("""
+            QPushButton {
+                background-color: #4a4a4a;
+                color: #fff;
+                border: none;
+                border-radius: 5px;
+                padding: 8px 20px;
+                font-weight: bold;
+            }
+            QPushButton:hover {
+                background-color: #5a5a5a;
+            }
+        """)
+        close_btn.clicked.connect(self.close)
+        layout.addWidget(close_btn)
+    
+    def _on_ball_color_changed(self, color_name):
+        """공 색상 변경 이벤트"""
+        from config import BALL_COLOR_PRESETS
+        if color_name in BALL_COLOR_PRESETS:
+            desc = BALL_COLOR_PRESETS[color_name]["description"]
+            self.color_desc_label.setText(desc)
+            self.ballColorChanged.emit(color_name)
+        
+    def _on_setting_changed(self):
+        """설정 변경 이벤트"""
+        settings = {}
+        for key, cb in self.vis_checkboxes.items():
+            settings[key] = cb.isChecked()
+        self.settingsChanged.emit(settings)
+        
+    def get_settings(self):
+        """현재 설정 반환"""
+        settings = {}
+        for key, cb in self.vis_checkboxes.items():
+            settings[key] = cb.isChecked()
+        return settings
 
 
 class VisualizationRenderer:
@@ -226,11 +472,11 @@ class VideoThread(QThread):
 
 
 class VideoDisplay(QLabel):
-    """비디오 디스플레이 위젯"""
+    """비디오 디스플레이 위젯 (크기 축소)"""
     
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.setMinimumSize(640, 480)
+        self.setMinimumSize(480, 360)  # 축소
         self.setAlignment(Qt.AlignCenter)
         self.setStyleSheet("background-color: #1a1a1a; border: 2px solid #333;")
         self.setText("비디오 소스를 선택하세요")
@@ -255,13 +501,14 @@ class VideoDisplay(QLabel):
 
 
 class ControlPanel(QFrame):
-    """컨트롤 패널 위젯"""
+    """컨트롤 패널 위젯 (간소화 버전)"""
     
     # 시그널
     sourceChanged = pyqtSignal(str)  # 소스 변경
     visualizationChanged = pyqtSignal(dict)  # 시각화 설정 변경
     gameModeToggled = pyqtSignal(bool)  # 게임 모드 토글
     resetRequested = pyqtSignal()  # 리셋 요청
+    settingsToggled = pyqtSignal(bool)  # 설정 패널 토글
     
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -271,7 +518,8 @@ class ControlPanel(QFrame):
     def _init_ui(self):
         """UI 초기화"""
         layout = QVBoxLayout(self)
-        layout.setSpacing(10)
+        layout.setSpacing(8)
+        layout.setContentsMargins(10, 10, 10, 10)
         
         # === 소스 선택 섹션 ===
         source_group = QGroupBox("입력 소스")
@@ -289,33 +537,6 @@ class ControlPanel(QFrame):
         source_layout.addWidget(self.file_btn)
         
         layout.addWidget(source_group)
-        
-        # === 시각화 옵션 섹션 ===
-        vis_group = QGroupBox("시각화 옵션")
-        vis_layout = QVBoxLayout(vis_group)
-        
-        self.vis_checkboxes = {}
-        vis_options = [
-            ("zone", "스트라이크 존 (테두리)", True),
-            ("plane1", "판정면 1 (앞)", True),
-            ("plane2", "판정면 2 (뒤)", True),
-            ("grid", "9분할 그리드", True),
-            ("trajectory", "공 궤적", True),
-            ("speed", "구속 표시", True),
-            ("scoreboard", "스코어보드", True),
-            ("aruco", "ArUco 마커", True),
-            ("axes", "좌표축", False),
-            ("fmo", "FMO 모드 (Fast Moving Object)", False),
-        ]
-        
-        for key, label, default in vis_options:
-            cb = QCheckBox(label)
-            cb.setChecked(default)
-            cb.stateChanged.connect(self._on_vis_changed)
-            vis_layout.addWidget(cb)
-            self.vis_checkboxes[key] = cb
-            
-        layout.addWidget(vis_group)
         
         # === 게임 모드 섹션 ===
         game_group = QGroupBox("게임 모드")
@@ -338,6 +559,12 @@ class ControlPanel(QFrame):
         self.pause_btn = QPushButton("⏸ 일시정지")
         self.pause_btn.setCheckable(True)
         control_layout.addWidget(self.pause_btn, 0, 1)
+        
+        # 설정 패널 토글 버튼
+        self.settings_btn = QPushButton("⚙️ 시각화 설정")
+        self.settings_btn.setCheckable(True)
+        self.settings_btn.clicked.connect(self._on_settings_toggled)
+        control_layout.addWidget(self.settings_btn, 1, 0, 1, 2)
         
         layout.addWidget(control_group)
         
@@ -362,13 +589,6 @@ class ControlPanel(QFrame):
             self.source_combo.setCurrentIndex(2)
             self.sourceChanged.emit(f"file:{file_path}")
             
-    def _on_vis_changed(self):
-        """시각화 옵션 변경 이벤트"""
-        vis_settings = {}
-        for key, cb in self.vis_checkboxes.items():
-            vis_settings[key] = cb.isChecked()
-        self.visualizationChanged.emit(vis_settings)
-        
     def _on_game_mode_changed(self, state):
         """게임 모드 토글"""
         self.gameModeToggled.emit(state == Qt.Checked)
@@ -376,6 +596,10 @@ class ControlPanel(QFrame):
     def _on_reset(self):
         """리셋 버튼"""
         self.resetRequested.emit()
+        
+    def _on_settings_toggled(self, checked):
+        """설정 패널 토글"""
+        self.settingsToggled.emit(checked)
 
 
 class MainWindow(QMainWindow):
@@ -427,42 +651,49 @@ class MainWindow(QMainWindow):
         central_widget = QWidget()
         self.setCentralWidget(central_widget)
         
-        # 메인 레이아웃
+        # 메인 레이아웃 (수평: 왼쪽 + 오른쪽)
         main_layout = QHBoxLayout(central_widget)
-        main_layout.setSpacing(10)
-        main_layout.setContentsMargins(10, 10, 10, 10)
+        main_layout.setSpacing(8)
+        main_layout.setContentsMargins(8, 8, 8, 8)
         
-        # === 왼쪽: 비디오 + 하단 스코어보드 ===
+        # === 왼쪽: 비디오 + 하단(컨트롤|스코어보드|통계) ===
         left_panel = QWidget()
         left_layout = QVBoxLayout(left_panel)
-        left_layout.setSpacing(10)
+        left_layout.setSpacing(8)
+        left_layout.setContentsMargins(0, 0, 0, 0)
         
         # 비디오 디스플레이
         self.video_display = VideoDisplay()
         self.video_display.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         left_layout.addWidget(self.video_display, stretch=4)
         
-        # 하단 패널 (스코어보드 + 통계)
-        bottom_panel = QWidget()
-        bottom_layout = QHBoxLayout(bottom_panel)
+        # 왼쪽 하단: 컨트롤 | 스코어보드 | 통계
+        left_bottom_panel = QWidget()
+        left_bottom_layout = QHBoxLayout(left_bottom_panel)
+        left_bottom_layout.setContentsMargins(0, 0, 0, 0)
+        left_bottom_layout.setSpacing(8)
+        
+        # 컨트롤 패널
+        self.control_panel = ControlPanel()
+        left_bottom_layout.addWidget(self.control_panel, stretch=2)
         
         # 스코어보드
         self.scoreboard = Scoreboard()
-        bottom_layout.addWidget(self.scoreboard)
+        left_bottom_layout.addWidget(self.scoreboard, stretch=1)
         
         # 통계
         self.stats_widget = StatsWidget()
-        bottom_layout.addWidget(self.stats_widget)
+        left_bottom_layout.addWidget(self.stats_widget, stretch=1)
         
-        left_layout.addWidget(bottom_panel, stretch=1)
+        left_layout.addWidget(left_bottom_panel, stretch=1)
         
-        main_layout.addWidget(left_panel, stretch=3)
+        main_layout.addWidget(left_panel, stretch=2)  # 왼쪽 비율 축소 (3→2)
         
-        # === 오른쪽: 기록지 + 컨트롤 + 게임모드 ===
+        # === 오른쪽: 기록지 탭 + 투구 리스트 ===
         right_panel = QWidget()
-        right_panel.setFixedWidth(window_config.RIGHT_PANEL_WIDTH)
         right_layout = QVBoxLayout(right_panel)
-        right_layout.setSpacing(10)
+        right_layout.setSpacing(8)
+        right_layout.setContentsMargins(0, 0, 0, 0)
         
         # 탭 위젯 (기록지 / 게임모드)
         self.tab_widget = QTabWidget()
@@ -470,9 +701,18 @@ class MainWindow(QMainWindow):
         # 기록지 탭
         record_tab = QWidget()
         record_layout = QVBoxLayout(record_tab)
+        record_layout.setSpacing(5)
+        
+        # 기록지 (세로가 더 긴 비율)
         self.record_sheet = RecordSheet2D()
-        record_layout.addWidget(self.record_sheet)
-        record_layout.addStretch()
+        self.record_sheet.setMinimumSize(280, 350)  # 세로가 더 긴 비율
+        record_layout.addWidget(self.record_sheet, stretch=3)  # 기록지가 더 큼
+        
+        # 투구 리스트
+        self.pitch_list = PitchListWidget()
+        self.pitch_list.setMinimumHeight(120)  # 최소 높이 설정
+        record_layout.addWidget(self.pitch_list, stretch=2)  # 기록지보다 작게
+        
         self.tab_widget.addTab(record_tab, "📋 기록지")
         
         # 게임 모드 탭
@@ -485,11 +725,10 @@ class MainWindow(QMainWindow):
         
         right_layout.addWidget(self.tab_widget)
         
-        # 컨트롤 패널
-        self.control_panel = ControlPanel()
-        right_layout.addWidget(self.control_panel)
+        # 시각화 설정 다이얼로그 (별도 창)
+        self.settings_dialog = VisualizationSettingsDialog(self)
         
-        main_layout.addWidget(right_panel)
+        main_layout.addWidget(right_panel, stretch=2)  # 오른쪽 비율 확대 (1→2)
         
         # 상태바
         self.statusBar = QStatusBar()
@@ -504,12 +743,37 @@ class MainWindow(QMainWindow):
         
         # 컨트롤 패널
         self.control_panel.sourceChanged.connect(self._on_source_changed)
-        self.control_panel.visualizationChanged.connect(self._on_vis_changed)
         self.control_panel.gameModeToggled.connect(self._on_game_mode_toggled)
         self.control_panel.resetRequested.connect(self._on_reset)
+        self.control_panel.settingsToggled.connect(self._on_settings_toggled)
         
         # 일시정지 버튼
         self.control_panel.pause_btn.toggled.connect(self._on_pause_toggled)
+        
+        # 시각화 설정 다이얼로그
+        self.settings_dialog.settingsChanged.connect(self._on_vis_changed)
+        self.settings_dialog.ballColorChanged.connect(self._on_ball_color_changed)
+        
+        # 기록지 ↔ 투구 리스트 연동
+        self.record_sheet.pitchSelected.connect(self._on_pitch_selected_from_sheet)
+        self.pitch_list.pitchSelected.connect(self._on_pitch_selected_from_list)
+        
+    def _on_settings_toggled(self, visible):
+        """설정 다이얼로그 토글"""
+        if visible:
+            self.settings_dialog.show()
+            self.settings_dialog.raise_()
+            self.settings_dialog.activateWindow()
+        else:
+            self.settings_dialog.hide()
+        
+    def _on_pitch_selected_from_sheet(self, number):
+        """기록지에서 공 선택"""
+        self.pitch_list.select_pitch(number)
+        
+    def _on_pitch_selected_from_list(self, number):
+        """리스트에서 공 선택"""
+        self.record_sheet.select_pitch(number)
         
     def _apply_style(self):
         """스타일시트 적용"""
@@ -655,6 +919,10 @@ class MainWindow(QMainWindow):
     def _on_vis_changed(self, settings):
         """시각화 설정 변경"""
         self.vis_settings = settings
+    
+    def _on_ball_color_changed(self, color_name):
+        """공 색상 변경 (하위 클래스에서 오버라이드)"""
+        print(f"[MainWindow] 공 색상 변경: {color_name}")
         
     def _on_game_mode_toggled(self, enabled):
         """게임 모드 토글"""
@@ -662,10 +930,12 @@ class MainWindow(QMainWindow):
         if enabled:
             self.tab_widget.setCurrentIndex(1)  # 게임 모드 탭으로 전환
             self.target_zone = self.game_widget.set_random_target()
+            self.record_sheet.set_target_zone(self.target_zone)  # 기록지에 타겟 표시
             self.statusBar.showMessage(f"🎯 게임 모드 활성화됨 - 목표: {self.target_zone}구역")
         else:
             self.tab_widget.setCurrentIndex(0)  # 기록지 탭으로 전환
             self.target_zone = None
+            self.record_sheet.set_target_zone(None)  # 타겟 해제
             self.statusBar.showMessage("게임 모드 비활성화됨")
             
     def _on_pause_toggled(self, paused):
@@ -689,6 +959,7 @@ class MainWindow(QMainWindow):
         
         if reply == QMessageBox.Yes:
             self.record_sheet.clear_records()
+            self.pitch_list.clear_pitches()
             self.scoreboard.reset_all()
             self.stats_widget.reset()
             self.game_widget.reset()
@@ -700,11 +971,15 @@ class MainWindow(QMainWindow):
         x = pitch_data.get('x', 0)
         z = pitch_data.get('z', 0)
         speed = pitch_data.get('speed', 0)
+        trajectory = pitch_data.get('trajectory', None)  # 궤적 데이터
         
-        # 기록지 업데이트
-        self.record_sheet.add_record(x, z, is_strike, speed)
+        # 기록지 업데이트 (궤적 포함)
+        number = self.record_sheet.add_record(x, z, is_strike, speed, trajectory)
         
-        # 스코어보드 업데이트
+        # 투구 리스트 업데이트
+        self.pitch_list.add_pitch(number, is_strike, speed)
+        
+        # GUI 스코어보드 업데이트 (PitchAnalyzer의 scoreboard와 별도 객체)
         if is_strike:
             self.scoreboard.add_strike()
         else:
@@ -713,15 +988,18 @@ class MainWindow(QMainWindow):
         # 통계 업데이트
         self.stats_widget.add_pitch(is_strike, speed)
         
-        # 게임 모드일 경우 타겟 체크
+        # 게임 모드 타겟 구역을 기록지에 전달
         if self.game_mode_enabled:
+            self.record_sheet.set_target_zone(self.target_zone)
+            
             zone = self._calculate_zone(x, z)
             is_hit = self.game_widget.check_hit(zone)
             if is_hit:
                 self.statusBar.showMessage(f"🎯 명중! 구역 {zone}")
             else:
                 self.statusBar.showMessage(f"❌ 실패 (구역 {zone})")
-            self.target_zone = self.game_widget.set_random_target()  # 다음 타겟 (저장)
+            self.target_zone = self.game_widget.set_random_target()  # 다음 타겟
+            self.record_sheet.set_target_zone(self.target_zone)  # 새 타겟 표시
             
     def _calculate_zone(self, x, z):
         """X, Z 좌표로 9분할 구역 계산"""

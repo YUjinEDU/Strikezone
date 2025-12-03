@@ -26,6 +26,26 @@ LOG_FILENAME = os.path.join(log_dir, f"strike_log_{datetime.now().strftime('%Y%m
 GREEN_LOWER = (25, 180, 100)   # H:25~40, S:180~255, V:100~255
 GREEN_UPPER = (45, 255, 255)
 
+# === 공 색상 프리셋 (HSV 범위) ===
+# 각 프리셋: (lower, upper) - HSV 범위
+BALL_COLOR_PRESETS = {
+    "형광공": {
+        "lower": (25, 180, 100),
+        "upper": (45, 255, 255),
+        "description": "형광 연두색 공 (기본값)"
+    },
+    "노랑공": {
+        "lower": (18, 150, 100),
+        "upper": (35, 255, 255),
+        "description": "노란색 공"
+    },
+    "하얀공": {
+        "lower": (0, 0, 150),
+        "upper": (180, 60, 255),
+        "description": "흰색 공 (낮은 채도)"
+    }
+}
+
 """
 좌표계 정의(마커 좌표계, 단위 m)
 - X: 좌우(+는 오른쪽)

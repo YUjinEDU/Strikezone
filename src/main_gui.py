@@ -151,6 +151,19 @@ class PitchAnalyzer(QObject):
         if hasattr(self, 'ball_detector') and self.ball_detector is not None:
             self.ball_detector.fmo_enabled = fmo_enabled
     
+    def update_ball_color(self, color_name):
+        """공 색상 변경"""
+        from config import BALL_COLOR_PRESETS
+        
+        if color_name in BALL_COLOR_PRESETS:
+            preset = BALL_COLOR_PRESETS[color_name]
+            lower = preset["lower"]
+            upper = preset["upper"]
+            
+            if hasattr(self, 'ball_detector') and self.ball_detector is not None:
+                self.ball_detector.set_color_range(lower, upper)
+                print(f"[PitchAnalyzer] 공 색상 변경: {color_name} ({lower} ~ {upper})")
+    
     def update_game_mode(self, enabled, target_zone=None):
         """게임 모드 설정 업데이트"""
         self.game_mode_enabled = enabled
@@ -215,27 +228,29 @@ class PitchAnalyzer(QObject):
                 if self.game_mode_enabled and self.target_zone is not None:
                     self._draw_target_zone_on_plane2(overlay_frame, rvec, tvec, self.target_zone)
             
-            # 박스 그리기
-            pts2d_box = self.aruco_detector.project_points(self.box_corners_3d, rvec, tvec)
-            self.aruco_detector.draw_3d_box(overlay_frame, pts2d_box, BOX_EDGES, color=(0,0,0), thickness=2)
+            # 3D 박스 그리기 (zone 옵션 - 스트라이크 존)
+            if self.vis_settings.get('zone', True):
+                pts2d_box = self.aruco_detector.project_points(self.box_corners_3d, rvec, tvec)
+                self.aruco_detector.draw_3d_box(overlay_frame, pts2d_box, BOX_EDGES, color=(0,0,0), thickness=2)
             
             # 스코어보드 (scoreboard 옵션)
             if self.vis_settings.get('scoreboard', True):
                 self.scoreboard.draw(overlay_frame, self.aruco_detector, rvec, tvec)
             
-            # 기록된 투구 지점 표시
-            for impact in self.impact_points:
-                self.aruco_detector.draw_impact_point_on_plane(
-                    overlay_frame,
-                    impact['point_3d'],
-                    self.ball_zone_corners2,
-                    rvec, tvec,
-                    circle_radius=12,
-                    circle_color=(255, 255, 0),
-                    circle_thickness=2,
-                    number_text=impact['number'],
-                    text_color=(255, 0, 0)
-                )
+            # 기록된 투구 지점 표시 (ball_markers 옵션)
+            if self.vis_settings.get('ball_markers', True):
+                for impact in self.impact_points:
+                    self.aruco_detector.draw_impact_point_on_plane(
+                        overlay_frame,
+                        impact['point_3d'],
+                        self.ball_zone_corners2,
+                        rvec, tvec,
+                        circle_radius=12,
+                        circle_color=(255, 255, 0),
+                        circle_thickness=2,
+                        number_text=impact['number'],
+                        text_color=(255, 0, 0)
+                    )
             
             # 궤적 표시
             if self.vis_settings.get('trajectory', True) and len(self.traj_x) >= 2:
@@ -320,10 +335,21 @@ class PitchAnalyzer(QObject):
                 else:
                     self.realtime_speed_kmh = 0.0
                 
-                # 궤적 기록
-                self.traj_x.append(filtered_point[0])
-                self.traj_y.append(filtered_point[1])
-                self.traj_z.append(filtered_point[2])
+                # === 궤적 기록 필터링 ===
+                # 넓은 범위 내의 공만 기록 (X: ±0.8m, Z: -0.2~1.2m)
+                x, y, z = filtered_point[0], filtered_point[1], filtered_point[2]
+                in_tracking_zone = (-0.8 < x < 0.8) and (-0.2 < z < 1.2)
+                
+                # 공이 plane1 앞쪽에 있을 때 기록
+                approaching_zone = (y > -0.5)  # plane1 앞 0.5m 이내
+                
+                if in_tracking_zone and approaching_zone:
+                    self.traj_x.append(float(x))
+                    self.traj_y.append(float(y))
+                    self.traj_z.append(float(z))
+                    # 디버깅: 첫 번째와 마지막 궤적 점 확인
+                    if len(self.traj_x) == 1:
+                        print(f"[DEBUG 궤적 시작] X={x:.3f}, Y={y:.3f}, Z={z:.3f}")
                 
                 # 통과 감지 및 판정
                 self._check_crossing(filtered_point, rvec, tvec)
@@ -373,18 +399,28 @@ class PitchAnalyzer(QObject):
         zone = self.ball_zone_corners2  # plane2 사용
         
         # 타겟 구역의 행/열 (0-indexed)
+        # 야구 구역: 1,2,3(상단=높은Z), 4,5,6(중단), 7,8,9(하단=낮은Z)
         zone_idx = target_zone - 1
-        row = zone_idx // 3  # 0, 1, 2
-        col = zone_idx % 3   # 0, 1, 2
+        row = zone_idx // 3  # 0, 1, 2 (0=상단, 2=하단)
+        col = zone_idx % 3   # 0, 1, 2 (0=왼쪽, 2=오른쪽)
+        
+        # STRIKE_ZONE_CORNERS 배열 구조:
+        # zone[0] = Bottom-left (Z=0.25, 낮음)
+        # zone[1] = Bottom-right (Z=0.25, 낮음)
+        # zone[2] = Top-right (Z=0.65, 높음)
+        # zone[3] = Top-left (Z=0.65, 높음)
         
         # 구역의 4개 코너 계산 (3D)
         def interpolate_point_3d(t_col, t_row):
-            """bilinear 보간으로 3D 점 계산"""
-            # 상단 변에서의 점 (zone[0] ~ zone[1])
-            top = zone[0] * (1 - t_col) + zone[1] * t_col
-            # 하단 변에서의 점 (zone[3] ~ zone[2])
-            bottom = zone[3] * (1 - t_col) + zone[2] * t_col
-            # 수직 보간
+            """bilinear 보간으로 3D 점 계산
+            t_row: 0=상단(높은Z), 1=하단(낮은Z)
+            t_col: 0=왼쪽, 1=오른쪽
+            """
+            # 상단 변 (높은 Z): zone[3]=좌상, zone[2]=우상
+            top = zone[3] * (1 - t_col) + zone[2] * t_col
+            # 하단 변 (낮은 Z): zone[0]=좌하, zone[1]=우하
+            bottom = zone[0] * (1 - t_col) + zone[1] * t_col
+            # 수직 보간 (t_row=0이면 top, t_row=1이면 bottom)
             return top * (1 - t_row) + bottom * t_row
         
         # 구역 코너 (좌상, 우상, 우하, 좌하)
@@ -484,32 +520,42 @@ class PitchAnalyzer(QObject):
         
         # === plane1 통과 처리 ===
         if crossed_p1 and (not self.plane1_crossed) and cross_point_p1 is not None:
-            self.plane1_crossed = True
-            self.t_cross_plane1 = self.prev_time_perf + alpha1 * (now_perf - self.prev_time_perf)
-            self.plane1_in_zone = self.aruco_detector.is_point_in_strike_zone_3d(
-                cross_point_p1, self.ball_zone_corners
-            )
-            self.cross_point_p1_saved = cross_point_p1.copy()
+            # 좌표 범위 검증: 넓은 범위 내인지 확인
+            x, z = cross_point_p1[0], cross_point_p1[2]
+            in_valid_range = (-0.8 < x < 0.8) and (-0.2 < z < 1.2)
             
-            if self.first_plane_time is None:
-                self.first_plane_time = self.t_cross_plane1
-            
-            zone_status = "스트라이크존 내부 ✓" if self.plane1_in_zone else "스트라이크존 밖 ✗"
-            print(f"[plane1 통과] X={cross_point_p1[0]:.3f}, Z={cross_point_p1[2]:.3f} → {zone_status}")
+            if in_valid_range:
+                self.plane1_crossed = True
+                self.t_cross_plane1 = self.prev_time_perf + alpha1 * (now_perf - self.prev_time_perf)
+                self.plane1_in_zone = self.aruco_detector.is_point_in_strike_zone_3d(
+                    cross_point_p1, self.ball_zone_corners
+                )
+                self.cross_point_p1_saved = cross_point_p1.copy()
+                
+                if self.first_plane_time is None:
+                    self.first_plane_time = self.t_cross_plane1
+                
+                zone_status = "스트라이크존 내부 ✓" if self.plane1_in_zone else "스트라이크존 밖 ✗"
+                print(f"[plane1 통과] X={cross_point_p1[0]:.3f}, Z={cross_point_p1[2]:.3f} → {zone_status}")
         
         # === plane2 통과 처리 ===
         if crossed_p2 and (not self.plane2_crossed) and cross_point_p2 is not None:
-            self.plane2_crossed = True
-            self.t_cross_plane2 = self.prev_time_perf + alpha2 * (now_perf - self.prev_time_perf)
-            self.plane2_in_zone = self.aruco_detector.is_point_in_strike_zone_3d(
-                cross_point_p2, self.ball_zone_corners2
-            )
-            self.cross_point_p2_saved = cross_point_p2.copy()
+            # 좌표 범위 검증: 넓은 범위 내인지 확인
+            x, z = cross_point_p2[0], cross_point_p2[2]
+            in_valid_range = (-0.8 < x < 0.8) and (-0.2 < z < 1.2)
             
-            if self.first_plane_time is None:
-                self.first_plane_time = self.t_cross_plane2
-            
-            print(f"[plane2 통과] X={cross_point_p2[0]:.3f}, Z={cross_point_p2[2]:.3f} → 스트라이크존 내부: {self.plane2_in_zone}")
+            if in_valid_range:
+                self.plane2_crossed = True
+                self.t_cross_plane2 = self.prev_time_perf + alpha2 * (now_perf - self.prev_time_perf)
+                self.plane2_in_zone = self.aruco_detector.is_point_in_strike_zone_3d(
+                    cross_point_p2, self.ball_zone_corners2
+                )
+                self.cross_point_p2_saved = cross_point_p2.copy()
+                
+                if self.first_plane_time is None:
+                    self.first_plane_time = self.t_cross_plane2
+                
+                print(f"[plane2 통과] X={cross_point_p2[0]:.3f}, Z={cross_point_p2[2]:.3f} → 스트라이크존 내부: {self.plane2_in_zone}")
         
         # === 판정: 두 평면 모두 통과했을 때 ===
         cooldown_passed = (current_time - self.last_judgment_time) >= self.judgment_cooldown
@@ -568,13 +614,30 @@ class PitchAnalyzer(QObject):
                 'number': pitch_number
             })
             
-            # 시그널 발생
+            # 궤적 데이터 복사 (리셋 전에)
+            trajectory_data = list(zip(self.traj_x, self.traj_y, self.traj_z))
+            
+            # 궤적 마지막 점을 최종 공 위치로 보정 (마커와 궤적 일치)
+            if trajectory_data:
+                final_x = float(point_on_plane2[0])
+                final_y = float(point_on_plane2[1]) if len(point_on_plane2) > 1 else 0.0
+                final_z = float(point_on_plane2[2])
+                trajectory_data.append((final_x, final_y, final_z))
+            
+            # 디버깅 로그
+            if trajectory_data:
+                print(f"[DEBUG] 궤적 데이터: {len(trajectory_data)}개 점")
+                print(f"[DEBUG] 궤적 마지막: ({trajectory_data[-1][0]:.3f}, {trajectory_data[-1][2]:.3f})")
+                print(f"[DEBUG] 최종 위치: ({final_x:.3f}, {final_z:.3f})")
+            
+            # 시그널 발생 (궤적 포함)
             self.pitch_detected.emit({
                 'is_strike': is_strike,
                 'x': float(point_on_plane2[0]),
                 'z': float(point_on_plane2[2]),
                 'speed': float(v_kmh),
-                'number': pitch_number
+                'number': pitch_number,
+                'trajectory': trajectory_data  # 3D 궤적 추가
             })
             
             # 상태 리셋
@@ -585,10 +648,12 @@ class PitchAnalyzer(QObject):
             self.pitch_completed_time = current_time
         
         # === 한쪽 평면만 통과 후 옆으로 빠진 경우 → 볼 판정 ===
+        # 단, 유효한 궤적 데이터가 있을 때만
         one_plane_only = (self.plane1_crossed and not self.plane2_crossed) or (self.plane2_crossed and not self.plane1_crossed)
         passed_through = (d1 < -0.05) or (d2 < -0.05)
+        has_valid_trajectory = len(self.traj_x) >= 3  # 최소 3개 이상의 궤적 포인트
         
-        if one_plane_only and passed_through and cooldown_passed:
+        if one_plane_only and passed_through and cooldown_passed and has_valid_trajectory:
             if self.plane1_crossed and not self.plane2_crossed:
                 print(f"[판정] plane1 통과 후 plane2 미통과 (옆으로 빠짐) → 볼")
             else:
@@ -604,12 +669,16 @@ class PitchAnalyzer(QObject):
                 'number': pitch_number
             })
             
+            # 궤적 데이터 복사 (리셋 전에)
+            trajectory_data = list(zip(self.traj_x, self.traj_y, self.traj_z))
+            
             self.pitch_detected.emit({
                 'is_strike': False,
                 'x': float(point_on_plane2[0]),
                 'z': float(point_on_plane2[2]),
                 'speed': 0.0,
-                'number': pitch_number
+                'number': pitch_number,
+                'trajectory': trajectory_data  # 3D 궤적 추가
             })
             
             self._reset_pitch_state()
@@ -701,6 +770,11 @@ class IntegratedMainWindow(MainWindow):
         super()._on_vis_changed(settings)
         self.pitch_analyzer.update_vis_settings(settings)
     
+    def _on_ball_color_changed(self, color_name):
+        """공 색상 변경 (오버라이드)"""
+        super()._on_ball_color_changed(color_name)
+        self.pitch_analyzer.update_ball_color(color_name)
+    
     def _on_game_mode_toggled(self, enabled):
         """게임 모드 토글 (오버라이드)"""
         super()._on_game_mode_toggled(enabled)
@@ -725,6 +799,7 @@ class IntegratedMainWindow(MainWindow):
         
         if reply == QMessageBox.Yes:
             self.record_sheet.clear_records()
+            self.pitch_list.clear_pitches()  # 투구 리스트도 초기화
             self.scoreboard.reset_all()
             self.stats_widget.reset()
             self.game_widget.reset()
@@ -749,90 +824,37 @@ def main():
     print("  ⚾ AR Strike Zone Analyzer (GUI 버전)")
     print("=" * 50)
     
-    # 입력 소스 선택
-    print("\n입력 소스 선택:")
-    print("1: 카메라")
-    print("2: 비디오 파일")
-    user_input = input("> ").strip()
-    
+    # 캘리브레이션 로드 (기본)
     camera_matrix = None
     dist_coeffs = None
-    video_source = None
-    is_video_mode = False
     
-    if user_input == "1":
-        # 카메라 모드
-        shutdown_event = threading.Event()
-        camera_manager = CameraManager(shutdown_event)
-        selected_camera = camera_manager.create_camera_selection_gui()
-        
-        if selected_camera is None:
-            print("카메라가 선택되지 않았습니다.")
-            return
-            
-        if not camera_manager.open_camera(selected_camera):
-            print(f"카메라 {selected_camera}를 열 수 없습니다.")
-            return
-            
-        if not camera_manager.load_calibration(CALIBRATION_PATH):
-            print("캘리브레이션 데이터 로드 실패")
-            return
-            
-        camera_matrix = camera_manager.camera_matrix
-        dist_coeffs = camera_manager.dist_coeffs
-        video_source = selected_camera
-        
-    elif user_input == "2":
-        # 비디오 모드
-        video_path = input("비디오 파일 경로 (기본: ./video/video_BBS.mp4): ").strip()
-        if not video_path:
-            video_path = "./video/video_BBS.mp4"
-            
-        if not os.path.exists(video_path):
-            print(f"파일을 찾을 수 없습니다: {video_path}")
-            return
-            
-        # 캘리브레이션 로드
-        try:
-            calib_data = np.load(CALIBRATION_PATH)
-            camera_matrix = calib_data["camera_matrix"]
-            dist_coeffs = calib_data["dist_coeffs"]
-        except Exception as e:
-            print(f"캘리브레이션 데이터 로드 실패: {e}")
-            return
-            
-        video_source = video_path
-        is_video_mode = True
-    else:
-        print("잘못된 입력입니다.")
-        return
+    try:
+        calib_data = np.load(CALIBRATION_PATH)
+        camera_matrix = calib_data["camera_matrix"]
+        dist_coeffs = calib_data["dist_coeffs"]
+        print(f"✅ 캘리브레이션 로드 완료: {CALIBRATION_PATH}")
+    except Exception as e:
+        print(f"⚠️ 캘리브레이션 데이터 로드 실패: {e}")
+        print("기본값을 사용합니다.")
+        # 기본 카메라 매트릭스 (추정값)
+        camera_matrix = np.array([
+            [800, 0, 320],
+            [0, 800, 240],
+            [0, 0, 1]
+        ], dtype=np.float32)
+        dist_coeffs = np.zeros(5, dtype=np.float32)
     
     # PyQt5 앱 시작
     app = QApplication(sys.argv)
     
     # 메인 윈도우 생성
     window = IntegratedMainWindow(camera_matrix, dist_coeffs)
-    
-    # 왜곡 보정 설정
-    cap_temp = cv2.VideoCapture(video_source)
-    ret, temp_frame = cap_temp.read()
-    if ret:
-        h, w = temp_frame.shape[:2]
-        window.pitch_analyzer.setup_undistort(w, h)
-    cap_temp.release()
-    
-    # 소스 설정 및 시작
-    if is_video_mode:
-        window.control_panel.sourceChanged.emit(f"file:{video_source}")
-    else:
-        window.control_panel.sourceChanged.emit(f"camera:{video_source}")
-    
     window.show()
     
     print("\n✅ GUI 시작됨")
+    print("- 입력 소스: GUI 상단 '입력 소스' 메뉴에서 선택")
     print("- 왼쪽: 비디오 + 시각화")
     print("- 오른쪽: 기록지 / 게임 모드")
-    print("- 하단: 스코어보드 + 통계")
     
     sys.exit(app.exec_())
 

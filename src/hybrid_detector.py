@@ -53,6 +53,18 @@ class HybridDetector:
         
         # === FMO 토글 ===
         self.fmo_enabled = True           # FMO 활성화 여부
+    
+    def set_color_range(self, color_lower, color_upper):
+        """
+        색상 범위 동적 변경
+        
+        Args:
+            color_lower: HSV 하한값 (튜플)
+            color_upper: HSV 상한값 (튜플)
+        """
+        self.lower_color = np.array(color_lower)
+        self.upper_color = np.array(color_upper)
+        print(f"[HybridDetector] 색상 범위 변경: {color_lower} ~ {color_upper}")
 
     def _detect_by_color(self, frame):
         """
