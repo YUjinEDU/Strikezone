@@ -1,0 +1,39 @@
+{
+  "dataset_id": "catcher_view_v1",
+  "created_at": "2025-12-17",
+  "default": {
+    "view_type": "catcher"
+  },
+  "videos": [
+    {
+      "video_id": "VIDEO_ID_HERE",
+      "url": "https://www.youtube.com/watch?v=VIDEO_ID_HERE",
+      "source": "youtube",
+      "view_type": "catcher",
+      "meta": {
+        "title": "behind_the_plate_example",
+        "channel": "example_channel",
+        "event": "bullpen",
+        "resolution_hint": "1080p60"
+      },
+      "clips": [
+        {
+          "clip_id": "p001",
+          "start_sec": 12.30,
+          "end_sec": 12.95,
+          "tags": ["fastball", "day"],
+          "notes": "투구 시작~미트 도착 (예시)"
+        },
+        {
+          "clip_id": "p002",
+          "start_sec": 15.10,
+          "end_sec": 15.85,
+          "tags": ["breaking", "day"],
+          "notes": "두 번째 투구 (예시)"
+        }
+      ]
+    }
+  ]
+}
+
+

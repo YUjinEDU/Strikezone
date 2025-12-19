@@ -770,7 +770,7 @@ class TFLiteWrapper(context: Context, modelPath: String) {
             buffer.putFloat(((pixel shr 16) and 0xFF) / 255.0f)  // R
             buffer.putFloat(((pixel shr 8) and 0xFF) / 255.0f)   // G
             buffer.putFloat((pixel and 0xFF) / 255.0f)           // B
-        }
+        }****
         
         buffer.rewind()
         return buffer

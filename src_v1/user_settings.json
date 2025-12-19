@@ -1,0 +1,19 @@
+{
+  "vis_settings": {
+    "zone": true,
+    "plane1": true,
+    "plane2": true,
+    "grid": true,
+    "trajectory": false,
+    "ball_markers": false,
+    "speed": false,
+    "scoreboard": true,
+    "aruco": true,
+    "axes": true,
+    "fmo": false,
+    "bgs": false,
+    "roi": false
+  },
+  "game_mode_enabled": false,
+  "target_zone": null
+}
